@@ -71,5 +71,22 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
             // falls back to a default that can silently round money values.
             entity.Property(p => p.BasePrice).HasPrecision(18, 2);
         });
+
+        builder.Entity<Variant>(entity =>
+        {
+            // Required, Restrict: a Variant can never exist without its parent Product, and
+            // a Product can't be deleted while it still has variants - the capstone's explicit
+            // no-orphan-variant requirement, enforced by the database itself.
+            entity.HasOne(v => v.Product)
+                .WithMany(p => p.Variants)
+                .HasForeignKey(v => v.ProductId)
+                .IsRequired()
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Global uniqueness across the whole platform, not just within one product.
+            entity.HasIndex(v => v.SKU).IsUnique();
+
+            entity.Property(v => v.Price).HasPrecision(18, 2);
+        });
     }
 }
