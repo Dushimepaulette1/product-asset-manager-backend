@@ -88,5 +88,25 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
 
             entity.Property(v => v.Price).HasPrecision(18, 2);
         });
+
+        builder.Entity<ProductCollection>(entity =>
+        {
+            // Composite key - a given (ProductId, CollectionId) pairing can only exist once,
+            // so the same product can't be added to the same collection twice.
+            entity.HasKey(pc => new { pc.ProductId, pc.CollectionId });
+
+            // Cascade here (unlike the entities above): a ProductCollection row is just a
+            // membership record, not data worth protecting on its own - if either side is
+            // deleted, the pairing should simply disappear with it.
+            entity.HasOne(pc => pc.Product)
+                .WithMany(p => p.ProductCollections)
+                .HasForeignKey(pc => pc.ProductId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(pc => pc.Collection)
+                .WithMany(c => c.ProductCollections)
+                .HasForeignKey(pc => pc.CollectionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
     }
 }
