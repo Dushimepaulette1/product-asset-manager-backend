@@ -56,5 +56,20 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
                 .HasFilter("[ParentCategoryId] IS NOT NULL")
                 .HasDatabaseName("IX_Categories_ParentCategoryId_Name");
         });
+
+        builder.Entity<Product>(entity =>
+        {
+            // Restrict: deleting a category that still has products assigned to it is
+            // refused by the database rather than silently deleting those products.
+            entity.HasOne(p => p.Category)
+                .WithMany(c => c.Products)
+                .HasForeignKey(p => p.CategoryId)
+                .IsRequired()
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // SQL Server needs an explicit precision/scale for decimal columns, or EF Core
+            // falls back to a default that can silently round money values.
+            entity.Property(p => p.BasePrice).HasPrecision(18, 2);
+        });
     }
 }
