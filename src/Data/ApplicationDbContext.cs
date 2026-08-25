@@ -31,5 +31,30 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
         // Must run first - this is what configures Identity's own tables. Skipping it
         // silently breaks login/roles.
         base.OnModelCreating(builder);
+
+        builder.Entity<Category>(entity =>
+        {
+            // Self-referencing hierarchy. Restrict, not Cascade: SQL Server rejects cascade
+            // on self-referencing FKs outright (risk of infinite cascade loops), so this is
+            // effectively mandatory here, not just a safety choice.
+            entity.HasOne(c => c.ParentCategory)
+                .WithMany(c => c.ChildCategories)
+                .HasForeignKey(c => c.ParentCategoryId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Sibling-name uniqueness needs two filtered indexes, not one plain index on
+            // (ParentCategoryId, Name): SQL Server treats every NULL as distinct from every
+            // other NULL, so a plain unique index would let multiple root-level categories
+            // (ParentCategoryId IS NULL) share the same Name without being caught.
+            entity.HasIndex(c => c.Name)
+                .IsUnique()
+                .HasFilter("[ParentCategoryId] IS NULL")
+                .HasDatabaseName("IX_Categories_Name_RootLevel");
+
+            entity.HasIndex(c => new { c.ParentCategoryId, c.Name })
+                .IsUnique()
+                .HasFilter("[ParentCategoryId] IS NOT NULL")
+                .HasDatabaseName("IX_Categories_ParentCategoryId_Name");
+        });
     }
 }
