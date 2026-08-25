@@ -108,5 +108,24 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
                 .HasForeignKey(pc => pc.CollectionId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
+
+        builder.Entity<Order>(entity =>
+        {
+            // Restrict on both FKs: order history is a record of what actually happened and
+            // shouldn't disappear because a user account or a variant gets deleted later.
+            entity.HasOne(o => o.User)
+                .WithMany(u => u.Orders)
+                .HasForeignKey(o => o.UserId)
+                .IsRequired()
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(o => o.Variant)
+                .WithMany(v => v.Orders)
+                .HasForeignKey(o => o.VariantId)
+                .IsRequired()
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(o => o.UnitPriceAtPurchase).HasPrecision(18, 2);
+        });
     }
 }
