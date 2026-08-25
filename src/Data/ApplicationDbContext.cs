@@ -1,4 +1,6 @@
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
+using ProductAssetManager.Api.Models;
 
 namespace ProductAssetManager.Api.Data;
 
@@ -8,12 +10,26 @@ namespace ProductAssetManager.Api.Data;
 // rather than going through a separate repository layer - for this capstone's scope that's a
 // reasonable, idiomatic simplification, not a shortcut.
 //
-// DbSets and entity configuration (Fluent API, keys, constraints, migrations) are added in
-// Card 3 once the entity classes below are finalized.
-public class ApplicationDbContext : DbContext
+// Extends IdentityDbContext<ApplicationUser> so ASP.NET Core Identity's own tables (users,
+// roles, role membership, etc.) are created and tied to our ApplicationUser automatically.
+public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
 {
     public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
         : base(options)
     {
+    }
+
+    public DbSet<Category> Categories => Set<Category>();
+    public DbSet<Product> Products => Set<Product>();
+    public DbSet<Variant> Variants => Set<Variant>();
+    public DbSet<Collection> Collections => Set<Collection>();
+    public DbSet<ProductCollection> ProductCollections => Set<ProductCollection>();
+    public DbSet<Order> Orders => Set<Order>();
+
+    protected override void OnModelCreating(ModelBuilder builder)
+    {
+        // Must run first - this is what configures Identity's own tables. Skipping it
+        // silently breaks login/roles.
+        base.OnModelCreating(builder);
     }
 }
