@@ -24,6 +24,11 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
 
 var app = builder.Build();
 
+using (var scope = app.Services.CreateScope())
+{
+    await IdentitySeeder.SeedAsync(scope.ServiceProvider, app.Configuration);
+}
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
