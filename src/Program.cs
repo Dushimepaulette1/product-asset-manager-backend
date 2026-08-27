@@ -23,10 +23,12 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
     options.Password.RequireLowercase = true;
     options.Password.RequireUppercase = true;
     options.Password.RequireNonAlphanumeric = true;
+    options.User.RequireUniqueEmail = true;
 })
     .AddEntityFrameworkStores<ApplicationDbContext>();
 
 builder.Services.AddScoped<ITokenService, TokenService>();
+builder.Services.AddScoped<IAuthService, AuthService>();
 
 var jwtSigningKey = builder.Configuration["Jwt:SigningKey"]
     ?? throw new InvalidOperationException("Jwt:SigningKey is not configured.");
