@@ -16,6 +16,17 @@ cd src
 dotnet ef database update
 ```
 
+### JWT signing key (local secret)
+
+The JWT signing key is never committed to source control. Set your own locally before running the app:
+
+```
+cd src
+dotnet user-secrets set "Jwt:SigningKey" "<a long random string, 32+ characters>"
+```
+
+Any sufficiently long random value works — this app only ever validates tokens it signed itself, so there is no shared secret to obtain from anyone.
+
 ### Run
 
 ```
