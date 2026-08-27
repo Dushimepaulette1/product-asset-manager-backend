@@ -1,17 +1,35 @@
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi;
 using ProductAssetManager.Api.Data;
 using ProductAssetManager.Api.Models;
 using ProductAssetManager.Api.Services;
+using Swashbuckle.AspNetCore.SwaggerGen;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new OpenApiInfo { Title = "Product Asset Manager API", Version = "v1" });
+
+    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "JWT",
+        In = ParameterLocation.Header,
+        Description = "Paste the token returned from /api/auth/login. No \"Bearer \" prefix needed."
+    });
+
+    options.OperationFilter<AuthorizeCheckOperationFilter>();
+});
 
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
@@ -72,3 +90,28 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+public partial class Program
+{
+}
+
+public class AuthorizeCheckOperationFilter : IOperationFilter
+{
+    public void Apply(OpenApiOperation operation, OperationFilterContext context)
+    {
+        var hasAuthorize = context.ApiDescription.ActionDescriptor.EndpointMetadata?.OfType<IAuthorizeData>().Any() ?? false;
+
+        if (!hasAuthorize)
+        {
+            return;
+        }
+
+        operation.Security = new List<OpenApiSecurityRequirement>
+        {
+            new()
+            {
+                [new OpenApiSecuritySchemeReference("Bearer", context.Document)] = new List<string>()
+            }
+        };
+    }
+}
