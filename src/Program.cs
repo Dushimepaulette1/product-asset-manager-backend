@@ -73,13 +73,15 @@ builder.Services.AddAuthentication(options =>
 
 var app = builder.Build();
 
-using (var scope = app.Services.CreateScope())
-{
-    await IdentitySeeder.SeedAsync(scope.ServiceProvider, app.Configuration);
-}
-
 if (app.Environment.IsDevelopment())
 {
+    using (var scope = app.Services.CreateScope())
+    {
+        var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        await dbContext.Database.MigrateAsync();
+        await IdentitySeeder.SeedAsync(scope.ServiceProvider, app.Configuration);
+    }
+
     app.UseSwagger();
     app.UseSwaggerUI();
 }

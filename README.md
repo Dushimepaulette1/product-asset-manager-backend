@@ -36,15 +36,17 @@ dotnet run
 
 Swagger UI is available at `/swagger` when running in the Development environment.
 
-### Seeded Admin account
+### Seeded Admin account (local secret)
 
-On first startup, the app seeds the `Admin` and `User` roles and one Admin account, using the
-credentials configured in `src/appsettings.Development.json` under `SeedAdmin`.
+On first startup in the Development environment, the app migrates the database and seeds the
+`Admin`/`User` roles plus one Admin account, using `SeedAdmin:Email` (in
+`appsettings.Development.json`) and `SeedAdmin:Password`, which is never committed. Set your own
+locally before running the app:
 
-| Email | Password |
-|---|---|
-| `admin@local.dev` | `DevAdmin123!` |
+```
+cd src
+dotnet user-secrets set "SeedAdmin:Password" "<any password meeting the Card 5 password policy>"
+```
 
-This is a local development fixture only — it seeds a LocalDB database that only exists on
-whichever machine runs the migration and the app. It is not a real secret and must never be
-reused for any deployed/production instance.
+The seeded email is `admin@local.dev`. Seeding only runs in Development, against whichever LocalDB
+database exists on your own machine — this account never exists anywhere shared or deployed.
