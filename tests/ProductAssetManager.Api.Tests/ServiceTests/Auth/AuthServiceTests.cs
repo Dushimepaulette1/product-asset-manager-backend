@@ -1,14 +1,15 @@
 using Microsoft.AspNetCore.Identity;
 using ProductAssetManager.Api.Data;
 using ProductAssetManager.Api.DTOs;
+using ProductAssetManager.Api.Tests.ServiceTests;
 
-namespace ProductAssetManager.Api.Tests.ServiceTests;
+namespace ProductAssetManager.Api.Tests.ServiceTests.Auth;
 
 [TestFixture]
 public class AuthServiceTests : ServiceTestBase
 {
     [Test]
-    public async Task RegisterAsync_WithValidRequest_CreatesUserWithUserRole()
+    public async Task When_RegisteringWithValidRequest_Should_CreateUserWithUserRole()
     {
         await RoleManager.CreateAsync(new IdentityRole(IdentitySeeder.UserRole));
 

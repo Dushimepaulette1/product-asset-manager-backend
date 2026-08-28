@@ -55,11 +55,12 @@ public abstract class ServiceTestBase
     [TearDown]
     public async Task ServiceTestBaseTearDown()
     {
-        await DbContext.Database.EnsureDeletedAsync();
         UserManager.Dispose();
         RoleManager.Dispose();
         await DbContext.DisposeAsync();
         await _provider.DisposeAsync();
+
+        await TestDatabase.DeleteAsync(TestDatabase.ServiceTestsConnectionString);
     }
 
     protected IAuthService CreateAuthService() => _provider.GetRequiredService<IAuthService>();

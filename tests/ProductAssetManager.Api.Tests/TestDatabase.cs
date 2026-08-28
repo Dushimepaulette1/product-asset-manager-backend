@@ -1,3 +1,4 @@
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using ProductAssetManager.Api.Data;
 
@@ -13,12 +14,25 @@ public static class TestDatabase
 
     public static async Task ResetAsync(string connectionString)
     {
+        await DeleteAsync(connectionString);
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(connectionString)
+            .Options;
+
+        await using var dbContext = new ApplicationDbContext(options);
+        await dbContext.Database.MigrateAsync();
+    }
+
+    public static async Task DeleteAsync(string connectionString)
+    {
+        SqlConnection.ClearPool(new SqlConnection(connectionString));
+
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseSqlServer(connectionString)
             .Options;
 
         await using var dbContext = new ApplicationDbContext(options);
         await dbContext.Database.EnsureDeletedAsync();
-        await dbContext.Database.MigrateAsync();
     }
 }
