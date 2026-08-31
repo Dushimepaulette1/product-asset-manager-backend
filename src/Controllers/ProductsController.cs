@@ -34,4 +34,11 @@ public class ProductsController : ControllerBase
 
         return StatusCode(201, result.Product);
     }
+
+    [HttpGet]
+    public async Task<IActionResult> Search([FromQuery] string? keyword, [FromQuery] decimal? maxPrice)
+    {
+        var products = await _productService.SearchAsync(keyword, maxPrice);
+        return Ok(products);
+    }
 }

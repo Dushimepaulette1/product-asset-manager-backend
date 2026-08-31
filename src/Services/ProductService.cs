@@ -127,5 +127,58 @@ public class ProductService : IProductService
         return new CreateProductResult(true, false, null, response);
     }
 
+    public async Task<List<PublicProductResponse>> SearchAsync(string? keyword, decimal? maxPrice)
+    {
+        var query = _dbContext.Products
+            .AsNoTracking()
+            .Include(p => p.Category)
+            .Include(p => p.Variants)
+            .AsQueryable();
+
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            query = query.Where(p => p.Name.Contains(keyword));
+        }
+
+        if (maxPrice.HasValue)
+        {
+            query = query.Where(p => p.BasePrice <= maxPrice.Value);
+        }
+
+        var products = await query.ToListAsync();
+
+        return products.Select(p => new PublicProductResponse
+        {
+            Id = p.Id,
+            Name = p.Name,
+            Description = p.Description,
+            BasePrice = p.BasePrice,
+            Material = p.Material,
+            CategoryId = p.CategoryId,
+            CategoryName = p.Category.Name,
+            Variants = p.Variants
+                .Where(v => v.IsActive)
+                .Select(v => new PublicVariantResponse
+                {
+                    Id = v.Id,
+                    Name = v.Name,
+                    Price = v.Price,
+                    Sku = v.SKU,
+                    StockStatus = GetStockStatus(v.Quantity)
+                })
+                .ToList()
+        }).ToList();
+    }
+
+    private static string GetStockStatus(int quantity)
+    {
+        if (quantity == 0)
+        {
+            return "OUT_OF_STOCK";
+        }
+
+        return quantity < 5 ? "LOW_STOCK" : "IN_STOCK";
+    }
+
     private static CreateProductResult Fail(string message) => new(false, false, message, null);
 }
