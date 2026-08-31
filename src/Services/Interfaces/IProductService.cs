@@ -7,4 +7,6 @@ public interface IProductService
     Task<CreateProductResult> CreateAsync(CreateProductRequest request);
 
     Task<List<PublicProductResponse>> SearchAsync(string? keyword, decimal? maxPrice);
+
+    Task<PublicProductResponse?> GetByIdAsync(Guid id);
 }

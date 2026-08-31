@@ -32,7 +32,7 @@ public class ProductsController : ControllerBase
             return BadRequest(new { message = result.ValidationError });
         }
 
-        return StatusCode(201, result.Product);
+        return CreatedAtAction(nameof(GetById), new { id = result.Product!.Id }, result.Product);
     }
 
     [HttpGet]
@@ -40,5 +40,18 @@ public class ProductsController : ControllerBase
     {
         var products = await _productService.SearchAsync(keyword, maxPrice);
         return Ok(products);
+    }
+
+    [HttpGet("{id:guid}")]
+    public async Task<IActionResult> GetById(Guid id)
+    {
+        var product = await _productService.GetByIdAsync(id);
+
+        if (product is null)
+        {
+            return NotFound(new { message = $"Product '{id}' was not found." });
+        }
+
+        return Ok(product);
     }
 }

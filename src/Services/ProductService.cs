@@ -147,28 +147,41 @@ public class ProductService : IProductService
 
         var products = await query.ToListAsync();
 
-        return products.Select(p => new PublicProductResponse
-        {
-            Id = p.Id,
-            Name = p.Name,
-            Description = p.Description,
-            BasePrice = p.BasePrice,
-            Material = p.Material,
-            CategoryId = p.CategoryId,
-            CategoryName = p.Category.Name,
-            Variants = p.Variants
-                .Where(v => v.IsActive)
-                .Select(v => new PublicVariantResponse
-                {
-                    Id = v.Id,
-                    Name = v.Name,
-                    Price = v.Price,
-                    Sku = v.SKU,
-                    StockStatus = GetStockStatus(v.Quantity)
-                })
-                .ToList()
-        }).ToList();
+        return products.Select(MapToPublicResponse).ToList();
     }
+
+    public async Task<PublicProductResponse?> GetByIdAsync(Guid id)
+    {
+        var product = await _dbContext.Products
+            .AsNoTracking()
+            .Include(p => p.Category)
+            .Include(p => p.Variants)
+            .FirstOrDefaultAsync(p => p.Id == id);
+
+        return product is null ? null : MapToPublicResponse(product);
+    }
+
+    private static PublicProductResponse MapToPublicResponse(Product p) => new()
+    {
+        Id = p.Id,
+        Name = p.Name,
+        Description = p.Description,
+        BasePrice = p.BasePrice,
+        Material = p.Material,
+        CategoryId = p.CategoryId,
+        CategoryName = p.Category.Name,
+        Variants = p.Variants
+            .Where(v => v.IsActive)
+            .Select(v => new PublicVariantResponse
+            {
+                Id = v.Id,
+                Name = v.Name,
+                Price = v.Price,
+                Sku = v.SKU,
+                StockStatus = GetStockStatus(v.Quantity)
+            })
+            .ToList()
+    };
 
     private static string GetStockStatus(int quantity)
     {
