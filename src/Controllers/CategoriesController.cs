@@ -27,6 +27,11 @@ public class CategoriesController : ControllerBase
             return NotFound(new { message = $"Parent category '{request.ParentCategoryId}' was not found." });
         }
 
+        if (result.DuplicateName)
+        {
+            return BadRequest(new { message = $"A category named '{request.Name}' already exists under the same parent." });
+        }
+
         return CreatedAtAction(nameof(GetById), new { id = result.Category!.Id }, result.Category);
     }
 

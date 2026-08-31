@@ -23,8 +23,16 @@ public class CategoryService : ICategoryService
 
             if (!parentExists)
             {
-                return new CreateCategoryResult(false, true, null);
+                return new CreateCategoryResult(false, true, false, null);
             }
+        }
+
+        var duplicateExists = await _dbContext.Categories
+            .AnyAsync(c => c.ParentCategoryId == request.ParentCategoryId && c.Name == request.Name);
+
+        if (duplicateExists)
+        {
+            return new CreateCategoryResult(false, false, true, null);
         }
 
         var category = new Category
@@ -34,7 +42,15 @@ public class CategoryService : ICategoryService
         };
 
         _dbContext.Categories.Add(category);
-        await _dbContext.SaveChangesAsync();
+
+        try
+        {
+            await _dbContext.SaveChangesAsync();
+        }
+        catch (DbUpdateException)
+        {
+            return new CreateCategoryResult(false, false, true, null);
+        }
 
         var response = new CategoryResponse
         {
@@ -43,7 +59,7 @@ public class CategoryService : ICategoryService
             ParentCategoryId = category.ParentCategoryId
         };
 
-        return new CreateCategoryResult(true, false, response);
+        return new CreateCategoryResult(true, false, false, response);
     }
 
     public async Task<List<CategoryResponse>> GetAllAsync()
@@ -98,5 +114,10 @@ public class CategoryService : ICategoryService
                 })
                 .ToList()
         };
+    }
+
+    public async Task<bool> IsTerminalAsync(Guid categoryId)
+    {
+        return !await _dbContext.Categories.AnyAsync(c => c.ParentCategoryId == categoryId);
     }
 }

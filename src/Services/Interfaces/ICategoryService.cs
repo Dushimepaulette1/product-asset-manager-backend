@@ -9,4 +9,6 @@ public interface ICategoryService
     Task<List<CategoryResponse>> GetAllAsync();
 
     Task<CategoryResponse?> GetByIdAsync(Guid id);
+
+    Task<bool> IsTerminalAsync(Guid categoryId);
 }
