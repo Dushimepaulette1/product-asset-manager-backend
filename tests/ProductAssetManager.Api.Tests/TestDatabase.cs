@@ -26,7 +26,10 @@ public static class TestDatabase
 
     public static async Task DeleteAsync(string connectionString)
     {
-        SqlConnection.ClearPool(new SqlConnection(connectionString));
+        using (var connection = new SqlConnection(connectionString))
+        {
+            SqlConnection.ClearPool(connection);
+        }
 
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseSqlServer(connectionString)

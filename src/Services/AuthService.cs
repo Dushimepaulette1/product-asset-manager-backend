@@ -36,6 +36,7 @@ public class AuthService : IAuthService
 
         if (!roleResult.Succeeded)
         {
+            await _userManager.DeleteAsync(user);
             return new RegisterResult(false, null, null, roleResult.Errors.Select(e => e.Description));
         }
 
