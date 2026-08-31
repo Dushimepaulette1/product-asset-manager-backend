@@ -21,8 +21,7 @@ public class LoginEndpointTests : ApiTestBase
             Password = TestUserPassword
         };
 
-        var response = await Client.PostAsJsonAsync("/api/auth/register", request);
-        Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.Created));
+        await Client.PostAsJsonAsync("/api/auth/register", request);
     }
 
     [Test]

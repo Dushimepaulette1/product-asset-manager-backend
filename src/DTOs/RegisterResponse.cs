@@ -1,8 +1,8 @@
 namespace ProductAssetManager.Api.DTOs;
 
-public class RegisterResponse
+public record RegisterResponse
 {
-    public string Id { get; set; } = string.Empty;
+    public string Id { get; init; } = string.Empty;
 
-    public string Email { get; set; } = string.Empty;
+    public string Email { get; init; } = string.Empty;
 }
