@@ -9,4 +9,6 @@ public interface IProductService
     Task<List<PublicProductResponse>> SearchAsync(string? keyword, decimal? maxPrice);
 
     Task<PublicProductResponse?> GetByIdAsync(Guid id);
+
+    Task<AddVariantResult> AddVariantAsync(Guid productId, CreateVariantRequest request);
 }

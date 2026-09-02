@@ -113,18 +113,55 @@ public class ProductService : IProductService
             CategoryName = category.Name,
             CreatedAt = product.CreatedAt,
             UpdatedAt = product.UpdatedAt,
-            Variants = product.Variants.Select(v => new VariantResponse
-            {
-                Id = v.Id,
-                Name = v.Name,
-                Price = v.Price,
-                Sku = v.SKU,
-                Quantity = v.Quantity,
-                IsActive = v.IsActive
-            }).ToList()
+            Variants = product.Variants.Select(MapToVariantResponse).ToList()
         };
 
         return new CreateProductResult(true, false, null, response);
+    }
+
+    public async Task<AddVariantResult> AddVariantAsync(Guid productId, CreateVariantRequest request)
+    {
+        var product = await _dbContext.Products.FirstOrDefaultAsync(p => p.Id == productId);
+
+        if (product is null)
+        {
+            return new AddVariantResult(false, true, null, null);
+        }
+
+        if (request.Quantity < 0)
+        {
+            return new AddVariantResult(false, false, "Quantity must be zero or greater.", null);
+        }
+
+        var duplicateExists = await _dbContext.Variants.AnyAsync(v => v.SKU == request.Sku);
+
+        if (duplicateExists)
+        {
+            return new AddVariantResult(false, false, $"SKU '{request.Sku}' is already in use.", null);
+        }
+
+        var variant = new Variant
+        {
+            ProductId = productId,
+            Name = request.Name,
+            Price = request.Price,
+            SKU = request.Sku,
+            Quantity = request.Quantity,
+            IsActive = true
+        };
+
+        _dbContext.Variants.Add(variant);
+
+        try
+        {
+            await _dbContext.SaveChangesAsync();
+        }
+        catch (DbUpdateException)
+        {
+            return new AddVariantResult(false, false, $"Could not add variant - SKU '{request.Sku}' may already be in use.", null);
+        }
+
+        return new AddVariantResult(true, false, null, MapToVariantResponse(variant));
     }
 
     public async Task<List<PublicProductResponse>> SearchAsync(string? keyword, decimal? maxPrice)
@@ -181,6 +218,16 @@ public class ProductService : IProductService
                 StockStatus = GetStockStatus(v.Quantity)
             })
             .ToList()
+    };
+
+    private static VariantResponse MapToVariantResponse(Variant v) => new()
+    {
+        Id = v.Id,
+        Name = v.Name,
+        Price = v.Price,
+        Sku = v.SKU,
+        Quantity = v.Quantity,
+        IsActive = v.IsActive
     };
 
     private static string GetStockStatus(int quantity)

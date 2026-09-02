@@ -54,4 +54,23 @@ public class ProductsController : ControllerBase
 
         return Ok(product);
     }
+
+    [HttpPost("{productId:guid}/variants")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> AddVariant(Guid productId, CreateVariantRequest request)
+    {
+        var result = await _productService.AddVariantAsync(productId, request);
+
+        if (result.ProductNotFound)
+        {
+            return NotFound(new { message = $"Product '{productId}' was not found." });
+        }
+
+        if (result.ValidationError is not null)
+        {
+            return BadRequest(new { message = result.ValidationError });
+        }
+
+        return StatusCode(201, result.Variant);
+    }
 }
