@@ -113,7 +113,7 @@ public class ProductService : IProductService
             CategoryName = category.Name,
             CreatedAt = product.CreatedAt,
             UpdatedAt = product.UpdatedAt,
-            Variants = product.Variants.Select(MapToVariantResponse).ToList()
+            Variants = product.Variants.Select(VariantMapper.ToResponse).ToList()
         };
 
         return new CreateProductResult(true, false, null, response);
@@ -161,7 +161,7 @@ public class ProductService : IProductService
             return new AddVariantResult(false, false, $"Could not add variant - SKU '{request.Sku}' may already be in use.", null);
         }
 
-        return new AddVariantResult(true, false, null, MapToVariantResponse(variant));
+        return new AddVariantResult(true, false, null, VariantMapper.ToResponse(variant));
     }
 
     public async Task<List<PublicProductResponse>> SearchAsync(string? keyword, decimal? maxPrice)
@@ -218,16 +218,6 @@ public class ProductService : IProductService
                 StockStatus = GetStockStatus(v.Quantity)
             })
             .ToList()
-    };
-
-    private static VariantResponse MapToVariantResponse(Variant v) => new()
-    {
-        Id = v.Id,
-        Name = v.Name,
-        Price = v.Price,
-        Sku = v.SKU,
-        Quantity = v.Quantity,
-        IsActive = v.IsActive
     };
 
     private static string GetStockStatus(int quantity)
