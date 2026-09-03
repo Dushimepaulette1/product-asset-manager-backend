@@ -282,7 +282,7 @@ public class ProductService : IProductService
 
         var products = await query.ToListAsync();
 
-        return products.Select(MapToPublicResponse).ToList();
+        return products.Select(ProductMapper.ToPublicResponse).ToList();
     }
 
     public async Task<PublicProductResponse?> GetByIdAsync(Guid id)
@@ -293,39 +293,7 @@ public class ProductService : IProductService
             .Include(p => p.Variants)
             .FirstOrDefaultAsync(p => p.Id == id);
 
-        return product is null ? null : MapToPublicResponse(product);
-    }
-
-    private static PublicProductResponse MapToPublicResponse(Product p) => new()
-    {
-        Id = p.Id,
-        Name = p.Name,
-        Description = p.Description,
-        BasePrice = p.BasePrice,
-        Material = p.Material,
-        CategoryId = p.CategoryId,
-        CategoryName = p.Category.Name,
-        Variants = p.Variants
-            .Where(v => v.IsActive)
-            .Select(v => new PublicVariantResponse
-            {
-                Id = v.Id,
-                Name = v.Name,
-                Price = v.Price,
-                Sku = v.SKU,
-                StockStatus = GetStockStatus(v.Quantity)
-            })
-            .ToList()
-    };
-
-    private static string GetStockStatus(int quantity)
-    {
-        if (quantity == 0)
-        {
-            return "OUT_OF_STOCK";
-        }
-
-        return quantity < 5 ? "LOW_STOCK" : "IN_STOCK";
+        return product is null ? null : ProductMapper.ToPublicResponse(product);
     }
 
     private static CreateProductResult Fail(string message) => new(false, false, message, null);
