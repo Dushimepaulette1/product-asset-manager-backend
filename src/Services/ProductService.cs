@@ -164,6 +164,104 @@ public class ProductService : IProductService
         return new AddVariantResult(true, false, null, VariantMapper.ToResponse(variant));
     }
 
+    public async Task<UpdateProductResult> UpdateAsync(Guid id, UpdateProductRequest request)
+    {
+        var product = await _dbContext.Products
+            .Include(p => p.Category)
+            .Include(p => p.Variants)
+            .FirstOrDefaultAsync(p => p.Id == id);
+
+        if (product is null)
+        {
+            return new UpdateProductResult(false, true, false, null, null);
+        }
+
+        if (request.Name is not null && string.IsNullOrWhiteSpace(request.Name))
+        {
+            return FailUpdate("Name cannot be empty.");
+        }
+
+        if (request.Description is not null && string.IsNullOrWhiteSpace(request.Description))
+        {
+            return FailUpdate("Description cannot be empty.");
+        }
+
+        if (request.Material is not null && string.IsNullOrWhiteSpace(request.Material))
+        {
+            return FailUpdate("Material cannot be empty.");
+        }
+
+        if (request.BasePrice.HasValue && request.BasePrice.Value <= 0)
+        {
+            return FailUpdate("BasePrice must be a positive number.");
+        }
+
+        Category? newCategory = null;
+
+        if (request.CategoryId.HasValue)
+        {
+            newCategory = await _dbContext.Categories.FirstOrDefaultAsync(c => c.Id == request.CategoryId.Value);
+
+            if (newCategory is null)
+            {
+                return new UpdateProductResult(false, false, true, null, null);
+            }
+
+            var isTerminal = await _categoryService.IsTerminalAsync(newCategory.Id);
+
+            if (!isTerminal)
+            {
+                return FailUpdate("The assigned category must be terminal (have no child categories).");
+            }
+        }
+
+        if (request.Name is not null)
+        {
+            product.Name = request.Name;
+        }
+
+        if (request.Description is not null)
+        {
+            product.Description = request.Description;
+        }
+
+        if (request.BasePrice.HasValue)
+        {
+            product.BasePrice = request.BasePrice.Value;
+        }
+
+        if (request.Material is not null)
+        {
+            product.Material = request.Material;
+        }
+
+        if (newCategory is not null)
+        {
+            product.Category = newCategory;
+            product.CategoryId = newCategory.Id;
+        }
+
+        product.UpdatedAt = DateTime.UtcNow;
+
+        await _dbContext.SaveChangesAsync();
+
+        var response = new ProductResponse
+        {
+            Id = product.Id,
+            Name = product.Name,
+            Description = product.Description,
+            BasePrice = product.BasePrice,
+            Material = product.Material,
+            CategoryId = product.CategoryId,
+            CategoryName = product.Category.Name,
+            CreatedAt = product.CreatedAt,
+            UpdatedAt = product.UpdatedAt,
+            Variants = product.Variants.Select(VariantMapper.ToResponse).ToList()
+        };
+
+        return new UpdateProductResult(true, false, false, null, response);
+    }
+
     public async Task<List<PublicProductResponse>> SearchAsync(string? keyword, decimal? maxPrice)
     {
         var query = _dbContext.Products
@@ -231,4 +329,6 @@ public class ProductService : IProductService
     }
 
     private static CreateProductResult Fail(string message) => new(false, false, message, null);
+
+    private static UpdateProductResult FailUpdate(string message) => new(false, false, false, message, null);
 }
