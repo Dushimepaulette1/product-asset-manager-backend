@@ -23,6 +23,7 @@ public class OrderService : IOrderService
 
         var variant = await _dbContext.Variants
             .Include(v => v.Product)
+            .AsNoTracking()
             .FirstOrDefaultAsync(v => v.Id == request.VariantId);
 
         if (variant is null || !variant.IsActive)
@@ -30,40 +31,59 @@ public class OrderService : IOrderService
             return new CreateOrderResult(false, true, null, null);
         }
 
-        if (request.Quantity > variant.Quantity)
-        {
-            return new CreateOrderResult(false, false, $"Only {variant.Quantity} unit(s) of '{variant.Name}' are available.", null);
-        }
-
         var unitPrice = variant.Price ?? variant.Product.BasePrice;
 
-        var order = new Order
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync();
+
+        try
         {
-            UserId = userId,
-            VariantId = variant.Id,
-            QuantityPurchased = request.Quantity,
-            UnitPriceAtPurchase = unitPrice,
-            OrderDate = DateTime.UtcNow
-        };
+            var rowsUpdated = await _dbContext.Variants
+                .Where(v => v.Id == variant.Id && v.Quantity >= request.Quantity)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(v => v.Quantity, v => v.Quantity - request.Quantity));
 
-        variant.Quantity -= request.Quantity;
+            if (rowsUpdated == 0)
+            {
+                var currentQuantity = await _dbContext.Variants
+                    .Where(v => v.Id == variant.Id)
+                    .Select(v => v.Quantity)
+                    .FirstOrDefaultAsync();
 
-        _dbContext.Orders.Add(order);
+                await transaction.RollbackAsync();
+                return new CreateOrderResult(false, false, $"Only {currentQuantity} unit(s) of '{variant.Name}' are available.", null);
+            }
 
-        await _dbContext.SaveChangesAsync();
+            var order = new Order
+            {
+                UserId = userId,
+                VariantId = variant.Id,
+                QuantityPurchased = request.Quantity,
+                UnitPriceAtPurchase = unitPrice,
+                OrderDate = DateTime.UtcNow
+            };
 
-        var response = new OrderResponse
+            _dbContext.Orders.Add(order);
+
+            await _dbContext.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            var response = new OrderResponse
+            {
+                Id = order.Id,
+                VariantId = variant.Id,
+                VariantSku = variant.SKU,
+                VariantName = variant.Name,
+                QuantityPurchased = order.QuantityPurchased,
+                UnitPriceAtPurchase = order.UnitPriceAtPurchase,
+                TotalPrice = order.UnitPriceAtPurchase * order.QuantityPurchased,
+                OrderDate = order.OrderDate
+            };
+
+            return new CreateOrderResult(true, false, null, response);
+        }
+        catch (DbUpdateException)
         {
-            Id = order.Id,
-            VariantId = variant.Id,
-            VariantSku = variant.SKU,
-            VariantName = variant.Name,
-            QuantityPurchased = order.QuantityPurchased,
-            UnitPriceAtPurchase = order.UnitPriceAtPurchase,
-            TotalPrice = order.UnitPriceAtPurchase * order.QuantityPurchased,
-            OrderDate = order.OrderDate
-        };
-
-        return new CreateOrderResult(true, false, null, response);
+            await transaction.RollbackAsync();
+            return new CreateOrderResult(false, false, "Could not complete the purchase due to a data conflict. Please try again.", null);
+        }
     }
 }
