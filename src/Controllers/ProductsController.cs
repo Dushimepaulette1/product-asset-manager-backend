@@ -73,4 +73,28 @@ public class ProductsController : ControllerBase
 
         return StatusCode(201, result.Variant);
     }
+
+    [HttpPatch("{id:guid}")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> Update(Guid id, UpdateProductRequest request)
+    {
+        var result = await _productService.UpdateAsync(id, request);
+
+        if (result.ProductNotFound)
+        {
+            return NotFound(new { message = $"Product '{id}' was not found." });
+        }
+
+        if (result.CategoryNotFound)
+        {
+            return NotFound(new { message = $"Category '{request.CategoryId}' was not found." });
+        }
+
+        if (result.ValidationError is not null)
+        {
+            return BadRequest(new { message = result.ValidationError });
+        }
+
+        return Ok(result.Product);
+    }
 }
