@@ -113,7 +113,7 @@ public class ProductService : IProductService
             CategoryName = category.Name,
             CreatedAt = product.CreatedAt,
             UpdatedAt = product.UpdatedAt,
-            Variants = product.Variants.Select(MapToVariantResponse).ToList()
+            Variants = product.Variants.Select(VariantMapper.ToResponse).ToList()
         };
 
         return new CreateProductResult(true, false, null, response);
@@ -161,7 +161,105 @@ public class ProductService : IProductService
             return new AddVariantResult(false, false, $"Could not add variant - SKU '{request.Sku}' may already be in use.", null);
         }
 
-        return new AddVariantResult(true, false, null, MapToVariantResponse(variant));
+        return new AddVariantResult(true, false, null, VariantMapper.ToResponse(variant));
+    }
+
+    public async Task<UpdateProductResult> UpdateAsync(Guid id, UpdateProductRequest request)
+    {
+        var product = await _dbContext.Products
+            .Include(p => p.Category)
+            .Include(p => p.Variants)
+            .FirstOrDefaultAsync(p => p.Id == id);
+
+        if (product is null)
+        {
+            return new UpdateProductResult(false, true, false, null, null);
+        }
+
+        if (request.Name is not null && string.IsNullOrWhiteSpace(request.Name))
+        {
+            return FailUpdate("Name cannot be empty.");
+        }
+
+        if (request.Description is not null && string.IsNullOrWhiteSpace(request.Description))
+        {
+            return FailUpdate("Description cannot be empty.");
+        }
+
+        if (request.Material is not null && string.IsNullOrWhiteSpace(request.Material))
+        {
+            return FailUpdate("Material cannot be empty.");
+        }
+
+        if (request.BasePrice.HasValue && request.BasePrice.Value <= 0)
+        {
+            return FailUpdate("BasePrice must be a positive number.");
+        }
+
+        Category? newCategory = null;
+
+        if (request.CategoryId.HasValue)
+        {
+            newCategory = await _dbContext.Categories.FirstOrDefaultAsync(c => c.Id == request.CategoryId.Value);
+
+            if (newCategory is null)
+            {
+                return new UpdateProductResult(false, false, true, null, null);
+            }
+
+            var isTerminal = await _categoryService.IsTerminalAsync(newCategory.Id);
+
+            if (!isTerminal)
+            {
+                return FailUpdate("The assigned category must be terminal (have no child categories).");
+            }
+        }
+
+        if (request.Name is not null)
+        {
+            product.Name = request.Name;
+        }
+
+        if (request.Description is not null)
+        {
+            product.Description = request.Description;
+        }
+
+        if (request.BasePrice.HasValue)
+        {
+            product.BasePrice = request.BasePrice.Value;
+        }
+
+        if (request.Material is not null)
+        {
+            product.Material = request.Material;
+        }
+
+        if (newCategory is not null)
+        {
+            product.Category = newCategory;
+            product.CategoryId = newCategory.Id;
+        }
+
+        product.UpdatedAt = DateTime.UtcNow;
+
+        await _dbContext.SaveChangesAsync();
+
+        var response = new ProductResponse
+        {
+            Id = product.Id,
+            Name = product.Name,
+            Description = product.Description,
+            BasePrice = product.BasePrice,
+            Material = product.Material,
+            CategoryId = product.CategoryId,
+            CategoryName = product.Category.Name,
+            CreatedAt = product.CreatedAt,
+            UpdatedAt = product.UpdatedAt,
+            Variants = product.Variants.Select(VariantMapper.ToResponse).ToList()
+        };
+
+        return new UpdateProductResult(true, false, false, null, response);
     }
 
     public async Task<List<PublicProductResponse>> SearchAsync(string? keyword, decimal? maxPrice)
@@ -184,7 +282,7 @@ public class ProductService : IProductService
 
         var products = await query.ToListAsync();
 
-        return products.Select(MapToPublicResponse).ToList();
+        return products.Select(ProductMapper.ToPublicResponse).ToList();
     }
 
     public async Task<PublicProductResponse?> GetByIdAsync(Guid id)
@@ -195,50 +293,10 @@ public class ProductService : IProductService
             .Include(p => p.Variants)
             .FirstOrDefaultAsync(p => p.Id == id);
 
-        return product is null ? null : MapToPublicResponse(product);
-    }
-
-    private static PublicProductResponse MapToPublicResponse(Product p) => new()
-    {
-        Id = p.Id,
-        Name = p.Name,
-        Description = p.Description,
-        BasePrice = p.BasePrice,
-        Material = p.Material,
-        CategoryId = p.CategoryId,
-        CategoryName = p.Category.Name,
-        Variants = p.Variants
-            .Where(v => v.IsActive)
-            .Select(v => new PublicVariantResponse
-            {
-                Id = v.Id,
-                Name = v.Name,
-                Price = v.Price,
-                Sku = v.SKU,
-                StockStatus = GetStockStatus(v.Quantity)
-            })
-            .ToList()
-    };
-
-    private static VariantResponse MapToVariantResponse(Variant v) => new()
-    {
-        Id = v.Id,
-        Name = v.Name,
-        Price = v.Price,
-        Sku = v.SKU,
-        Quantity = v.Quantity,
-        IsActive = v.IsActive
-    };
-
-    private static string GetStockStatus(int quantity)
-    {
-        if (quantity == 0)
-        {
-            return "OUT_OF_STOCK";
-        }
-
-        return quantity < 5 ? "LOW_STOCK" : "IN_STOCK";
+        return product is null ? null : ProductMapper.ToPublicResponse(product);
     }
 
     private static CreateProductResult Fail(string message) => new(false, false, message, null);
+
+    private static UpdateProductResult FailUpdate(string message) => new(false, false, false, message, null);
 }

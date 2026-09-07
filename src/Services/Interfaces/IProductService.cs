@@ -11,4 +11,6 @@ public interface IProductService
     Task<PublicProductResponse?> GetByIdAsync(Guid id);
 
     Task<AddVariantResult> AddVariantAsync(Guid productId, CreateVariantRequest request);
+
+    Task<UpdateProductResult> UpdateAsync(Guid id, UpdateProductRequest request);
 }
