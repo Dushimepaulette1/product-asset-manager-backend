@@ -94,6 +94,10 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
                 .OnDelete(DeleteBehavior.Restrict);
 
             entity.Property(o => o.UnitPriceAtPurchase).HasPrecision(18, 2);
+
+            entity.Property(o => o.Status)
+                .HasConversion<string>()
+                .HasDefaultValue(OrderStatus.Confirmed);
         });
     }
 }

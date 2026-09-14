@@ -17,4 +17,8 @@ public class Order
     public decimal UnitPriceAtPurchase { get; set; }
 
     public DateTime OrderDate { get; set; }
+
+    public OrderStatus Status { get; set; }
+
+    public string? RejectionReason { get; set; }
 }
