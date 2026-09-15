@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using ProductAssetManager.Api.DTOs;
+using ProductAssetManager.Api.Models;
 using ProductAssetManager.Api.Tests.ApiTests;
 
 namespace ProductAssetManager.Api.Tests.ApiTests.Orders;
@@ -44,32 +45,38 @@ public class PurchaseTests : ApiTestBase
     }
 
     [Test]
-    public async Task When_PurchasingInStockVariant_Should_CreateOrderAndReduceStock()
+    public async Task When_PurchasingInStockVariant_Should_AcceptImmediatelyAndLeaveOrderPending()
     {
         var response = await Client.PostAsJsonAsync(
             "/api/orders",
             new CreateOrderRequest { VariantId = _variantId, Quantity = 2 });
 
-        Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.Created));
+        Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.Accepted));
 
-        var order = await response.Content.ReadFromJsonAsync<OrderResponse>();
+        var accepted = await response.Content.ReadFromJsonAsync<OrderAcceptedResponse>();
 
-        Assert.That(order, Is.Not.Null);
-        Assert.That(order!.QuantityPurchased, Is.EqualTo(2));
-        Assert.That(order.VariantId, Is.EqualTo(_variantId));
+        Assert.That(accepted, Is.Not.Null);
+        Assert.That(accepted!.OrderId, Is.Not.EqualTo(Guid.Empty));
+
+        var status = await GetOrderStatusAsync(accepted.OrderId);
+        Assert.That(status, Is.EqualTo(OrderStatus.Pending));
 
         var remainingQuantity = await GetVariantQuantityAsync(SeededSku);
-        Assert.That(remainingQuantity, Is.EqualTo(3));
+        Assert.That(remainingQuantity, Is.EqualTo(5), "the Producer no longer touches stock - that now only happens once the Consumer (Card 5) processes the message");
     }
 
     [Test]
-    public async Task When_PurchasingMoreThanAvailableQuantity_Should_RejectAndLeaveStockUnchanged()
+    public async Task When_PurchasingMoreThanAvailableQuantity_Should_StillAcceptSinceStockCheckMovedToConsumer()
     {
         var response = await Client.PostAsJsonAsync(
             "/api/orders",
             new CreateOrderRequest { VariantId = _variantId, Quantity = 10 });
 
-        Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.BadRequest));
+        Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.Accepted));
+
+        var accepted = await response.Content.ReadFromJsonAsync<OrderAcceptedResponse>();
+        var status = await GetOrderStatusAsync(accepted!.OrderId);
+        Assert.That(status, Is.EqualTo(OrderStatus.Pending));
 
         var remainingQuantity = await GetVariantQuantityAsync(SeededSku);
         Assert.That(remainingQuantity, Is.EqualTo(5));
