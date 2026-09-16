@@ -27,6 +27,11 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
             var userSecretsSource = config.Sources[^1];
             config.Sources.RemoveAt(config.Sources.Count - 1);
             config.Sources.Insert(0, userSecretsSource);
+
+            config.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ServiceBus:AutoStartConsumer"] = "false"
+            });
         });
 
         builder.ConfigureServices(services =>

@@ -81,6 +81,15 @@ builder.Services.AddKeyedSingleton<ServiceBusSender>(ServiceBusQueues.Orders, (s
 builder.Services.AddKeyedSingleton<ServiceBusSender>(ServiceBusQueues.StockEvents, (sp, _) =>
     sp.GetRequiredKeyedService<ServiceBusClient>(ServiceBusQueues.StockEvents).CreateSender(stockEventsQueueName));
 
+builder.Services.AddSingleton(sp => new OrderConsumer(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredKeyedService<ServiceBusClient>(ServiceBusQueues.Orders),
+    sp.GetRequiredKeyedService<ServiceBusSender>(ServiceBusQueues.StockEvents),
+    sp.GetRequiredService<IConfiguration>(),
+    sp.GetRequiredService<ILogger<OrderConsumer>>()));
+
+builder.Services.AddHostedService(sp => sp.GetRequiredService<OrderConsumer>());
+
 var jwtSigningKey = builder.Configuration["Jwt:SigningKey"]
     ?? throw new InvalidOperationException("Jwt:SigningKey is not configured.");
 
