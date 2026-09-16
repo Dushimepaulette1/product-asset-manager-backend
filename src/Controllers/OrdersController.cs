@@ -35,6 +35,6 @@ public class OrdersController : ControllerBase
             return BadRequest(new { message = result.ValidationError });
         }
 
-        return StatusCode(201, result.Order);
+        return StatusCode(202, new OrderAcceptedResponse { OrderId = result.OrderId!.Value });
     }
 }

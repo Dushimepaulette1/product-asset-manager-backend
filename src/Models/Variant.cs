@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace ProductAssetManager.Api.Models;
 
 public class Variant
@@ -17,6 +19,9 @@ public class Variant
     public int Quantity { get; set; }
 
     public bool IsActive { get; set; } = true;
+
+    [Timestamp]
+    public byte[] RowVersion { get; set; } = Array.Empty<byte>();
 
     public ICollection<Order> Orders { get; set; } = new List<Order>();
 }

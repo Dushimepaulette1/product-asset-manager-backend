@@ -1,4 +1,5 @@
 using System.Text;
+using Azure.Messaging.ServiceBus;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
@@ -6,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using ProductAssetManager.Api.Data;
+using ProductAssetManager.Api.Messaging;
 using ProductAssetManager.Api.Middleware;
 using ProductAssetManager.Api.Models;
 using ProductAssetManager.Api.Services;
@@ -55,6 +57,27 @@ builder.Services.AddScoped<IProductService, ProductService>();
 builder.Services.AddScoped<IVariantService, VariantService>();
 builder.Services.AddScoped<ICollectionService, CollectionService>();
 builder.Services.AddScoped<IOrderService, OrderService>();
+
+var ordersConnectionString = builder.Configuration["ServiceBus:ConnectionString"]
+    ?? throw new InvalidOperationException("ServiceBus:ConnectionString is not configured.");
+
+var ordersQueueName = builder.Configuration["ServiceBus:QueueName"]
+    ?? throw new InvalidOperationException("ServiceBus:QueueName is not configured.");
+
+var stockEventsConnectionString = builder.Configuration["ServiceBus:StockEventsConnectionString"]
+    ?? throw new InvalidOperationException("ServiceBus:StockEventsConnectionString is not configured.");
+
+var stockEventsQueueName = builder.Configuration["ServiceBus:StockEventsQueueName"]
+    ?? throw new InvalidOperationException("ServiceBus:StockEventsQueueName is not configured.");
+
+builder.Services.AddKeyedSingleton<ServiceBusClient>(ServiceBusQueues.Orders, (_, _) => new ServiceBusClient(ordersConnectionString));
+builder.Services.AddKeyedSingleton<ServiceBusClient>(ServiceBusQueues.StockEvents, (_, _) => new ServiceBusClient(stockEventsConnectionString));
+
+builder.Services.AddKeyedSingleton<ServiceBusSender>(ServiceBusQueues.Orders, (sp, _) =>
+    sp.GetRequiredKeyedService<ServiceBusClient>(ServiceBusQueues.Orders).CreateSender(ordersQueueName));
+
+builder.Services.AddKeyedSingleton<ServiceBusSender>(ServiceBusQueues.StockEvents, (sp, _) =>
+    sp.GetRequiredKeyedService<ServiceBusClient>(ServiceBusQueues.StockEvents).CreateSender(stockEventsQueueName));
 
 var jwtSigningKey = builder.Configuration["Jwt:SigningKey"]
     ?? throw new InvalidOperationException("Jwt:SigningKey is not configured.");

@@ -91,4 +91,15 @@ public abstract class ApiTestBase
             .Select(v => v.Quantity)
             .FirstAsync();
     }
+
+    protected async Task<OrderStatus> GetOrderStatusAsync(Guid orderId)
+    {
+        using var scope = Factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        return await dbContext.Orders
+            .Where(o => o.Id == orderId)
+            .Select(o => o.Status)
+            .FirstAsync();
+    }
 }
