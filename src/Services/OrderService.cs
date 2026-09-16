@@ -72,4 +72,38 @@ public class OrderService : IOrderService
 
         return new CreateOrderResult(true, false, null, order.Id);
     }
+
+    public async Task<GetOrderResult> GetByIdAsync(Guid orderId, string requestingUserId, bool isAdmin)
+    {
+        var order = await _dbContext.Orders
+            .Include(o => o.Variant)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(o => o.Id == orderId);
+
+        if (order is null)
+        {
+            return new GetOrderResult(false, true, false, null);
+        }
+
+        if (!isAdmin && order.UserId != requestingUserId)
+        {
+            return new GetOrderResult(false, false, true, null);
+        }
+
+        var response = new OrderResponse
+        {
+            Id = order.Id,
+            Status = order.Status,
+            RejectionReason = order.RejectionReason,
+            VariantId = order.VariantId,
+            VariantSku = order.Variant.SKU,
+            VariantName = order.Variant.Name,
+            QuantityPurchased = order.QuantityPurchased,
+            UnitPriceAtPurchase = order.UnitPriceAtPurchase,
+            TotalPrice = order.UnitPriceAtPurchase * order.QuantityPurchased,
+            OrderDate = order.OrderDate
+        };
+
+        return new GetOrderResult(true, false, false, response);
+    }
 }

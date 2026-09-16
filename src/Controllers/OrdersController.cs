@@ -37,4 +37,25 @@ public class OrdersController : ControllerBase
 
         return StatusCode(202, new OrderAcceptedResponse { OrderId = result.OrderId!.Value });
     }
+
+    [HttpGet("{id:guid}")]
+    public async Task<IActionResult> GetById(Guid id)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
+        var isAdmin = User.IsInRole("Admin");
+
+        var result = await _orderService.GetByIdAsync(id, userId, isAdmin);
+
+        if (result.NotFound)
+        {
+            return NotFound(new { message = $"Order '{id}' was not found." });
+        }
+
+        if (result.Forbidden)
+        {
+            return StatusCode(403, new { message = "You do not have permission to view this order." });
+        }
+
+        return Ok(result.Order);
+    }
 }

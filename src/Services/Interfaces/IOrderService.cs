@@ -5,4 +5,6 @@ namespace ProductAssetManager.Api.Services;
 public interface IOrderService
 {
     Task<CreateOrderResult> CreateAsync(string userId, CreateOrderRequest request);
+
+    Task<GetOrderResult> GetByIdAsync(Guid orderId, string requestingUserId, bool isAdmin);
 }

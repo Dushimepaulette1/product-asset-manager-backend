@@ -1,8 +1,14 @@
+using ProductAssetManager.Api.Models;
+
 namespace ProductAssetManager.Api.DTOs;
 
 public record OrderResponse
 {
     public Guid Id { get; init; }
+
+    public OrderStatus Status { get; init; }
+
+    public string? RejectionReason { get; init; }
 
     public Guid VariantId { get; init; }
 
