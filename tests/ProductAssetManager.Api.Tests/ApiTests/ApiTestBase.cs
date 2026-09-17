@@ -1,7 +1,10 @@
+using System.Net.Http.Json;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using ProductAssetManager.Api.Data;
+using ProductAssetManager.Api.DTOs;
+using ProductAssetManager.Api.Messaging;
 using ProductAssetManager.Api.Models;
 using ProductAssetManager.Api.Services;
 
@@ -101,5 +104,30 @@ public abstract class ApiTestBase
             .Where(o => o.Id == orderId)
             .Select(o => o.Status)
             .FirstAsync();
+    }
+
+    protected Task ResumeConsumerAsync()
+    {
+        var consumer = Factory.Services.GetRequiredService<OrderConsumer>();
+        return consumer.ResumeProcessingAsync();
+    }
+
+    protected async Task<OrderResponse> PollUntilResolvedAsync(Guid orderId, TimeSpan? timeout = null, TimeSpan? pollInterval = null)
+    {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(10));
+        var interval = pollInterval ?? TimeSpan.FromMilliseconds(200);
+
+        while (true)
+        {
+            var response = await Client.GetAsync($"/api/orders/{orderId}");
+            var order = await response.Content.ReadFromJsonAsync<OrderResponse>(JsonTestOptions.Default);
+
+            if (order!.Status != OrderStatus.Pending || DateTime.UtcNow >= deadline)
+            {
+                return order;
+            }
+
+            await Task.Delay(interval);
+        }
     }
 }
