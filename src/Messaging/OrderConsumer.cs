@@ -150,6 +150,12 @@ public class OrderConsumer : BackgroundService
 
         if (confirmed)
         {
+            _logger.LogInformation(
+                "Order {OrderId} confirmed for SKU {Sku}, {Remaining} unit(s) remaining",
+                order.Id,
+                variant.SKU,
+                variant.Quantity);
+
             var stockEvent = new StockDecrementedMessage
             {
                 VariantId = variant.Id,
@@ -164,6 +170,14 @@ public class OrderConsumer : BackgroundService
             };
 
             await _stockEventsSender.SendMessageAsync(stockMessage, args.CancellationToken);
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Order {OrderId} rejected for SKU {Sku}: {Reason}",
+                order.Id,
+                variant.SKU,
+                order.RejectionReason);
         }
 
         await args.CompleteMessageAsync(args.Message, args.CancellationToken);
