@@ -115,18 +115,20 @@ The purchase flow needs a real Service Bus namespace. In the Azure Portal:
    - on `orders`: **Send** and **Listen**
    - on `stock-events`: **Send**
 
-The queue names come from `ServiceBus:QueueName` and `ServiceBus:StockEventsQueueName` in
-`src/appsettings.json` (`orders` and `stock-events` by default). The two connection strings are secrets
-and are never committed — set them in the next step.
+Nothing about the queues is committed to the repository: not the two connection strings, and not the
+queue names either. All four are read from configuration (`ServiceBus:ConnectionString`,
+`ServiceBus:StockEventsConnectionString`, `ServiceBus:QueueName`, `ServiceBus:StockEventsQueueName`) and
+you set them in the next step. Use whatever queue names you created; the commands below assume `orders`
+and `stock-events`.
 
 A Standard namespace has a fixed monthly charge whether or not it is used, so delete it when you have
 finished.
 
 ### 3. Configure local secrets
 
-Four values are intentionally **never committed** to source control — a JWT signing key, the seeded
-Admin account's password, and the two Service Bus connection strings. Set them once via
-`dotnet user-secrets`, from the `src/` folder:
+Six values are intentionally **never committed** to source control — a JWT signing key, the seeded
+Admin account's password, the two Service Bus connection strings, and the two queue names. Set them
+once via `dotnet user-secrets`, from the `src/` folder:
 
 ```
 cd src
@@ -134,6 +136,8 @@ dotnet user-secrets set "Jwt:SigningKey" "CapstoneDemo-2026-LocalOnly-SigningKey
 dotnet user-secrets set "SeedAdmin:Password" "AdminDemo123!"
 dotnet user-secrets set "ServiceBus:ConnectionString" "<connection string of the orders queue policy>"
 dotnet user-secrets set "ServiceBus:StockEventsConnectionString" "<connection string of the stock-events queue policy>"
+dotnet user-secrets set "ServiceBus:QueueName" "orders"
+dotnet user-secrets set "ServiceBus:StockEventsQueueName" "stock-events"
 ```
 
 Any sufficiently long random string works for the signing key — this app only ever validates tokens it
@@ -142,7 +146,7 @@ README's demo credentials (below) assume; feel free to set your own instead if y
 login to work.
 
 If a Service Bus value is missing, the app stops at startup with a message naming the missing key
-(for example `ServiceBus:ConnectionString is not configured.`) instead of failing later on the first
+(for example `ServiceBus:QueueName is not configured.`) instead of failing later on the first
 purchase.
 
 ### 4. Apply migrations and run
