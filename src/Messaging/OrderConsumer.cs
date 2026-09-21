@@ -108,6 +108,12 @@ public class OrderConsumer : BackgroundService
             return;
         }
 
+        if (order.Status != OrderStatus.Pending)
+        {
+            await args.CompleteMessageAsync(args.Message, args.CancellationToken);
+            return;
+        }
+
         var variant = order.Variant;
         var confirmed = false;
 
