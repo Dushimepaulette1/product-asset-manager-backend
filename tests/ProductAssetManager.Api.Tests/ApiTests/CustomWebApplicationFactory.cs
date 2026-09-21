@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using ProductAssetManager.Api.Data;
 
@@ -19,6 +20,14 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
+
+        builder.ConfigureAppConfiguration(config =>
+        {
+            config.AddUserSecrets<Program>(optional: true);
+            var userSecretsSource = config.Sources[^1];
+            config.Sources.RemoveAt(config.Sources.Count - 1);
+            config.Sources.Insert(0, userSecretsSource);
+        });
 
         builder.ConfigureServices(services =>
         {

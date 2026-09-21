@@ -1,6 +1,9 @@
+using Azure.Messaging.ServiceBus;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using ProductAssetManager.Api.Data;
 using ProductAssetManager.Api.DTOs;
+using ProductAssetManager.Api.Messaging;
 using ProductAssetManager.Api.Models;
 
 namespace ProductAssetManager.Api.Services;
@@ -8,10 +11,14 @@ namespace ProductAssetManager.Api.Services;
 public class OrderService : IOrderService
 {
     private readonly ApplicationDbContext _dbContext;
+    private readonly ServiceBusSender _ordersSender;
 
-    public OrderService(ApplicationDbContext dbContext)
+    public OrderService(
+        ApplicationDbContext dbContext,
+        [FromKeyedServices(ServiceBusQueues.Orders)] ServiceBusSender ordersSender)
     {
         _dbContext = dbContext;
+        _ordersSender = ordersSender;
     }
 
     public async Task<CreateOrderResult> CreateAsync(string userId, CreateOrderRequest request)
@@ -33,57 +40,36 @@ public class OrderService : IOrderService
 
         var unitPrice = variant.Price ?? variant.Product.BasePrice;
 
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync();
+        var order = new Order
+        {
+            UserId = userId,
+            VariantId = variant.Id,
+            QuantityPurchased = request.Quantity,
+            UnitPriceAtPurchase = unitPrice,
+            OrderDate = DateTime.UtcNow,
+            Status = OrderStatus.Pending
+        };
+
+        _dbContext.Orders.Add(order);
+        await _dbContext.SaveChangesAsync();
+
+        var message = new ServiceBusMessage(BinaryData.FromObjectAsJson(new OrderPlacedMessage { OrderId = order.Id }))
+        {
+            MessageId = order.Id.ToString(),
+            SessionId = variant.SKU
+        };
 
         try
         {
-            var rowsUpdated = await _dbContext.Variants
-                .Where(v => v.Id == variant.Id && v.Quantity >= request.Quantity)
-                .ExecuteUpdateAsync(setters => setters.SetProperty(v => v.Quantity, v => v.Quantity - request.Quantity));
-
-            if (rowsUpdated == 0)
-            {
-                var currentQuantity = await _dbContext.Variants
-                    .Where(v => v.Id == variant.Id)
-                    .Select(v => v.Quantity)
-                    .FirstOrDefaultAsync();
-
-                await transaction.RollbackAsync();
-                return new CreateOrderResult(false, false, $"Only {currentQuantity} unit(s) of '{variant.Name}' are available.", null);
-            }
-
-            var order = new Order
-            {
-                UserId = userId,
-                VariantId = variant.Id,
-                QuantityPurchased = request.Quantity,
-                UnitPriceAtPurchase = unitPrice,
-                OrderDate = DateTime.UtcNow
-            };
-
-            _dbContext.Orders.Add(order);
-
-            await _dbContext.SaveChangesAsync();
-            await transaction.CommitAsync();
-
-            var response = new OrderResponse
-            {
-                Id = order.Id,
-                VariantId = variant.Id,
-                VariantSku = variant.SKU,
-                VariantName = variant.Name,
-                QuantityPurchased = order.QuantityPurchased,
-                UnitPriceAtPurchase = order.UnitPriceAtPurchase,
-                TotalPrice = order.UnitPriceAtPurchase * order.QuantityPurchased,
-                OrderDate = order.OrderDate
-            };
-
-            return new CreateOrderResult(true, false, null, response);
+            await _ordersSender.SendMessageAsync(message);
         }
-        catch (DbUpdateException)
+        catch
         {
-            await transaction.RollbackAsync();
-            return new CreateOrderResult(false, false, "Could not complete the purchase due to a data conflict. Please try again.", null);
+            _dbContext.Orders.Remove(order);
+            await _dbContext.SaveChangesAsync();
+            throw;
         }
+
+        return new CreateOrderResult(true, false, null, order.Id);
     }
 }
