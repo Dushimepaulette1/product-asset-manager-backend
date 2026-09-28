@@ -73,12 +73,12 @@ public class OrderService : IOrderService
         return new CreateOrderResult(true, false, null, order.Id);
     }
 
-    public async Task<GetOrderResult> GetByIdAsync(Guid orderId, string requestingUserId, bool isAdmin)
+    public async Task<GetOrderResult> GetByIdAsync(Guid orderId, string requestingUserId, bool isAdmin, CancellationToken cancellationToken = default)
     {
         var order = await _dbContext.Orders
             .Include(o => o.Variant)
             .AsNoTracking()
-            .FirstOrDefaultAsync(o => o.Id == orderId);
+            .FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken);
 
         if (order is null)
         {
@@ -90,19 +90,17 @@ public class OrderService : IOrderService
             return new GetOrderResult(false, false, true, null);
         }
 
-        var response = new OrderResponse
-        {
-            Id = order.Id,
-            Status = order.Status,
-            RejectionReason = order.RejectionReason,
-            VariantId = order.VariantId,
-            VariantSku = order.Variant.SKU,
-            VariantName = order.Variant.Name,
-            QuantityPurchased = order.QuantityPurchased,
-            UnitPriceAtPurchase = order.UnitPriceAtPurchase,
-            TotalPrice = order.UnitPriceAtPurchase * order.QuantityPurchased,
-            OrderDate = order.OrderDate
-        };
+        var response = new OrderResponse(
+            Id: order.Id,
+            Status: order.Status,
+            RejectionReason: order.RejectionReason,
+            VariantId: order.VariantId,
+            VariantSku: order.Variant.SKU,
+            VariantName: order.Variant.Name,
+            QuantityPurchased: order.QuantityPurchased,
+            UnitPriceAtPurchase: order.UnitPriceAtPurchase,
+            TotalPrice: order.UnitPriceAtPurchase * order.QuantityPurchased,
+            OrderDate: order.OrderDate);
 
         return new GetOrderResult(true, false, false, response);
     }

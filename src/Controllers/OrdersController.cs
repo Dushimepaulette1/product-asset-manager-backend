@@ -39,12 +39,12 @@ public class OrdersController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
-    public async Task<IActionResult> GetById(Guid id)
+    public async Task<IActionResult> GetById(Guid id, CancellationToken cancellationToken)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
         var isAdmin = User.IsInRole("Admin");
 
-        var result = await _orderService.GetByIdAsync(id, userId, isAdmin);
+        var result = await _orderService.GetByIdAsync(id, userId, isAdmin, cancellationToken);
 
         if (result.NotFound)
         {
