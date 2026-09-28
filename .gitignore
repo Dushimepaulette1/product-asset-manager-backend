@@ -3,6 +3,9 @@
 ##
 ## Get latest from `dotnet new gitignore`
 
+# Personal notes, never committed
+myNotes.md
+
 # dotenv files
 .env
 

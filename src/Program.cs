@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Serialization;
 using Azure.Messaging.ServiceBus;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -17,7 +18,8 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options => options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -78,6 +80,15 @@ builder.Services.AddKeyedSingleton<ServiceBusSender>(ServiceBusQueues.Orders, (s
 
 builder.Services.AddKeyedSingleton<ServiceBusSender>(ServiceBusQueues.StockEvents, (sp, _) =>
     sp.GetRequiredKeyedService<ServiceBusClient>(ServiceBusQueues.StockEvents).CreateSender(stockEventsQueueName));
+
+builder.Services.AddSingleton(sp => new OrderConsumer(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredKeyedService<ServiceBusClient>(ServiceBusQueues.Orders),
+    sp.GetRequiredKeyedService<ServiceBusSender>(ServiceBusQueues.StockEvents),
+    sp.GetRequiredService<IConfiguration>(),
+    sp.GetRequiredService<ILogger<OrderConsumer>>()));
+
+builder.Services.AddHostedService(sp => sp.GetRequiredService<OrderConsumer>());
 
 var jwtSigningKey = builder.Configuration["Jwt:SigningKey"]
     ?? throw new InvalidOperationException("Jwt:SigningKey is not configured.");
