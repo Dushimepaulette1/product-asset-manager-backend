@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Azure.Messaging.ServiceBus;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -90,11 +91,19 @@ public class OrderConsumer : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
-        var orderPlaced = args.Message.Body.ToObjectFromJson<OrderPlacedMessage>();
+        var orderPlaced = ReadOrderPlaced(args.Message);
 
         if (orderPlaced is null)
         {
-            await args.CompleteMessageAsync(args.Message, args.CancellationToken);
+            _logger.LogError(
+                "Message {MessageId} has an unusable body and was dead-lettered",
+                args.Message.MessageId);
+
+            await args.DeadLetterMessageAsync(
+                args.Message,
+                "InvalidMessageBody",
+                "The body is not a valid OrderPlaced message carrying an order id.",
+                args.CancellationToken);
             return;
         }
 
@@ -104,12 +113,22 @@ public class OrderConsumer : BackgroundService
 
         if (order is null)
         {
+            _logger.LogWarning(
+                "Order {OrderId} from message {MessageId} was not found; completing the message because retrying cannot help",
+                orderPlaced.OrderId,
+                args.Message.MessageId);
+
             await args.CompleteMessageAsync(args.Message, args.CancellationToken);
             return;
         }
 
         if (order.Status != OrderStatus.Pending)
         {
+            _logger.LogInformation(
+                "Order {OrderId} is already {Status}; ignoring a redelivered message",
+                order.Id,
+                order.Status);
+
             await args.CompleteMessageAsync(args.Message, args.CancellationToken);
             return;
         }
@@ -156,13 +175,11 @@ public class OrderConsumer : BackgroundService
                 variant.SKU,
                 variant.Quantity);
 
-            var stockEvent = new StockDecrementedMessage
-            {
-                VariantId = variant.Id,
-                Sku = variant.SKU,
-                NewQuantity = variant.Quantity,
-                OrderId = order.Id
-            };
+            var stockEvent = new StockDecrementedMessage(
+                VariantId: variant.Id,
+                Sku: variant.SKU,
+                NewQuantity: variant.Quantity,
+                OrderId: order.Id);
 
             var stockMessage = new ServiceBusMessage(BinaryData.FromObjectAsJson(stockEvent))
             {
@@ -181,6 +198,19 @@ public class OrderConsumer : BackgroundService
         }
 
         await args.CompleteMessageAsync(args.Message, args.CancellationToken);
+    }
+
+    private static OrderPlacedMessage? ReadOrderPlaced(ServiceBusReceivedMessage message)
+    {
+        try
+        {
+            var orderPlaced = message.Body.ToObjectFromJson<OrderPlacedMessage>();
+            return orderPlaced is null || orderPlaced.OrderId == Guid.Empty ? null : orderPlaced;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private Task ProcessErrorAsync(ProcessErrorEventArgs args)
