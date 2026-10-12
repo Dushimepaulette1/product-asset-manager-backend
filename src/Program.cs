@@ -112,8 +112,7 @@ var healthChecks = builder.Services.AddHealthChecks()
         "orders-queue",
         sp => new ServiceBusHealthCheck(sp.GetRequiredKeyedService<ServiceBusSender>(ServiceBusQueues.Orders)),
         failureStatus: null,
-        tags: [HealthCheckTags.Ready],
-        timeout: healthCheckTimeout));
+        tags: [HealthCheckTags.Ready]));
 
 if (consumerEnabled)
 {
@@ -121,9 +120,16 @@ if (consumerEnabled)
         "stock-events-queue",
         sp => new ServiceBusHealthCheck(sp.GetRequiredKeyedService<ServiceBusSender>(ServiceBusQueues.StockEvents)),
         failureStatus: null,
-        tags: [HealthCheckTags.Ready],
-        timeout: healthCheckTimeout));
+        tags: [HealthCheckTags.Ready]));
 }
+
+builder.Services.Configure<HealthCheckServiceOptions>(options =>
+{
+    foreach (var registration in options.Registrations)
+    {
+        registration.Timeout = healthCheckTimeout;
+    }
+});
 
 var jwtSigningKey = builder.Configuration["Jwt:SigningKey"]
     ?? throw new InvalidOperationException("Jwt:SigningKey is not configured.");
@@ -152,8 +158,16 @@ var app = builder.Build();
 
 app.UseExceptionHandler();
 
-using (var scope = app.Services.CreateScope())
+if (args.Contains("--migrate"))
 {
+    await DatabaseInitializer.MigrateAndSeedAsync(app.Services, app.Configuration, app.Logger);
+    return;
+}
+
+if (app.Configuration.GetValue("Database:InitializeOnStartup", true))
+{
+    using var scope = app.Services.CreateScope();
+
     if (app.Environment.IsDevelopment())
     {
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
