@@ -3,11 +3,14 @@ using System.Text.Json.Serialization;
 using Azure.Messaging.ServiceBus;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using ProductAssetManager.Api.Data;
+using ProductAssetManager.Api.Health;
 using ProductAssetManager.Api.Messaging;
 using ProductAssetManager.Api.Middleware;
 using ProductAssetManager.Api.Models;
@@ -90,6 +93,23 @@ builder.Services.AddSingleton(sp => new OrderConsumer(
 
 builder.Services.AddHostedService(sp => sp.GetRequiredService<OrderConsumer>());
 
+var healthCheckTimeout = TimeSpan.FromSeconds(5);
+
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<ApplicationDbContext>("database", tags: [HealthCheckTags.Ready])
+    .Add(new HealthCheckRegistration(
+        "orders-queue",
+        sp => new ServiceBusHealthCheck(sp.GetRequiredKeyedService<ServiceBusSender>(ServiceBusQueues.Orders)),
+        failureStatus: null,
+        tags: [HealthCheckTags.Ready],
+        timeout: healthCheckTimeout))
+    .Add(new HealthCheckRegistration(
+        "stock-events-queue",
+        sp => new ServiceBusHealthCheck(sp.GetRequiredKeyedService<ServiceBusSender>(ServiceBusQueues.StockEvents)),
+        failureStatus: null,
+        tags: [HealthCheckTags.Ready],
+        timeout: healthCheckTimeout));
+
 var jwtSigningKey = builder.Configuration["Jwt:SigningKey"]
     ?? throw new InvalidOperationException("Jwt:SigningKey is not configured.");
 
@@ -138,6 +158,16 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate = _ => false
+});
+
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains(HealthCheckTags.Ready)
+});
 
 app.Run();
 
