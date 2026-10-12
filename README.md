@@ -44,7 +44,7 @@ Controller  →  Service  →  ApplicationDbContext (EF Core)  →  SQL Server
 ### The purchase flow (Azure Service Bus)
 
 ```
-POST /api/orders                                      background, same process as the API
+POST /api/orders                                      background: in the API process, or its own container
   │                                                    ┌──────────────────────────────────┐
   ├─ validate: quantity ≥ 1, variant exists/active     │ OrderConsumer (BackgroundService)│
   ├─ save Order as Pending  ───────────────┐           │  one session per SKU, one message│
@@ -62,8 +62,9 @@ GET /api/orders/{id}  ◀── reads the row ───┘           │  • en
 - **Producer** — `OrderService.CreateAsync`. It checks only that the quantity is at least 1 and the
   variant exists and is active. It deliberately does **not** check stock: that decision belongs to the
   consumer, which is the only place that can make it safely.
-- **Consumer** — `OrderConsumer`, a hosted service that starts with the API. It uses a session-aware
-  processor in peek-lock mode with auto-complete off.
+- **Consumer** — `OrderConsumer`, a hosted service. With `dotnet run` it starts inside the API process;
+  under Docker Compose it runs in its own `consumer` container (see `Api__Enabled` / `Consumer__Enabled`
+  below). It uses a session-aware processor in peek-lock mode with auto-complete off.
 - **Messages** — `OrderPlaced` (`MessageId` = order id, `SessionId` = the variant's SKU, body
   `{ "OrderId": "..." }`) and `StockDecremented` (published to a second queue after a confirmed order).
 
@@ -84,7 +85,156 @@ GET /api/orders/{id}  ◀── reads the row ───┘           │  • en
 | `Collection` | many-to-many with `Product` via `ProductCollection` | a curated grouping (e.g. "Summer Sale") |
 | `ProductCollection` | join entity, composite key `(ProductId, CollectionId)` | pure many-to-many join, no meaning of its own |
 
-## Getting Started
+## Running the whole system with Docker
+
+This is the quickest way to see everything working. It needs **no Azure account and no .NET SDK**:
+Docker runs the API, the order consumer, SQL Server and a local Service Bus emulator for you.
+
+### Prerequisites
+
+- **Docker Desktop** (Windows/macOS) or **Docker Engine 24+** (Linux) with **Docker Compose v2.20+**.
+  Tested with Docker 29.1.3 and Compose v2.40.3. Check yours with `docker version` and `docker compose version`.
+- About **6 GB of memory** available to Docker (two SQL Server containers are the heavy part).
+- Free ports `8080`, `14333`, `5672` and `5300`, or change them in `.env`.
+
+### Start and stop
+
+```
+git clone https://github.com/Dushimepaulette1/product-asset-manager-backend.git
+cd product-asset-manager-backend
+cp .env.example .env
+docker compose up --build
+```
+
+`cp .env.example .env` creates your private settings file (it is gitignored). The placeholder values work
+as they are for a local run; change the passwords if you like. The first start takes a few minutes while
+images download and SQL Server initialises. The stack is ready when `api` and `consumer` show as
+`(healthy)` in `docker compose ps`.
+
+| Command | What it does |
+|---|---|
+| `docker compose up --build` | build the app image and start everything (add `-d` to run in the background) |
+| `docker compose ps -a` | list services and their health |
+| `docker compose logs -f consumer` | follow one service's logs |
+| `docker compose stop consumer` / `docker compose start consumer` | stop or restart only the consumer |
+| `docker compose down` | stop and remove the containers, **keeping** the database volume |
+| `docker compose down --volumes` | the same, and also delete all data for a completely fresh start |
+
+### Services
+
+| Service | What it is | URL / port on your machine |
+|---|---|---|
+| `api` | the Web API (`Consumer__Enabled=false`) | `http://localhost:8080` |
+| — Swagger UI | interactive API docs | `http://localhost:8080/swagger` |
+| — health | liveness / readiness | `http://localhost:8080/health/live`, `http://localhost:8080/health/ready` |
+| `consumer` | the order consumer (`Api__Enabled=false`); same image as `api` | not published (internal only) |
+| `migrator` | one-off job: applies migrations and seeds data, then exits | — |
+| `sqlserver` | the application database, data kept in the `sqlserver-data` volume | `localhost,14333` (user `sa`, password from `.env`) |
+| `servicebus` | Azure Service Bus emulator with the `orders` (sessions) and `stock-events` queues | AMQP `localhost:5672`, management `http://localhost:5300` |
+| `servicebus-sql` | the emulator's own SQL Server (the emulator needs one) | not published |
+| `servicebus-ready` | one-off job that waits until the emulator reports healthy, then exits | — |
+
+All ports come from `.env` (`API_PORT`, `SQL_PORT`, `SERVICEBUS_PORT`, `SERVICEBUS_MANAGEMENT_PORT`).
+
+### Start-up order
+
+Compose starts things in this order, using health checks, so nothing starts before what it needs:
+
+```
+sqlserver (healthy) ──▶ migrator (exits 0) ─────────┐
+                                                    ├──▶ api, consumer
+servicebus-sql (healthy) ──▶ servicebus ──▶ servicebus-ready (exits 0)
+```
+
+- `sqlserver` and `servicebus-sql` are healthy once `sqlcmd` can run `SELECT 1`.
+- The emulator image contains no shell, so it cannot health-check itself. `servicebus-ready` (a tiny curl
+  container) polls the emulator's `http://servicebus:5300/health` instead and exits once it says `healthy`.
+- `api` and `consumer` report healthy once `GET /health/ready` returns `200`.
+
+### Try it
+
+With the stack running, in a bash shell (Git Bash or WSL on Windows):
+
+```bash
+BASE=http://localhost:8080
+
+# 1. the demo product seeded by the migrator
+curl $BASE/api/products/22222222-2222-2222-2222-222222222222
+
+# 2. register a shopper and log in
+curl -X POST $BASE/api/auth/register -H "Content-Type: application/json" \
+  -d '{"name":"Shopper","email":"shopper@example.com","password":"Shopper_123!"}'
+TOKEN=$(curl -s -X POST $BASE/api/auth/login -H "Content-Type: application/json" \
+  -d '{"email":"shopper@example.com","password":"Shopper_123!"}' | sed -E 's/.*"token":"([^"]+)".*/\1/')
+
+# 3. buy one demo chair -> 202 Accepted with an orderId
+curl -X POST $BASE/api/orders -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"variantId":"33333333-3333-3333-3333-333333333333","quantity":1}'
+
+# 4. check the order (use the orderId from step 3): Pending, then Confirmed a few seconds later
+curl $BASE/api/orders/<orderId> -H "Authorization: Bearer $TOKEN"
+```
+
+Or do the same in Swagger at `http://localhost:8080/swagger`. The seeded Admin logs in with
+`SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` from your `.env`.
+
+**Consumer recovery.** Run `docker compose stop consumer`, buy a few more chairs (each still returns
+`202` and stays `Pending`, waiting in the queue), then `docker compose start consumer`. Within a few
+seconds every order becomes `Confirmed`, and `docker compose logs consumer` shows one line per order with
+the remaining stock. Stop only the consumer, never `servicebus`: the emulator loses its messages when its
+own container restarts.
+
+### Container smoke test
+
+```
+scripts/smoke-test.sh
+```
+
+It starts a separate copy of the stack (its own Compose project, so your data is never touched; stop your
+everyday stack first because the ports are the same), then:
+
+- **Positive:** waits for `/health/ready`, then expects `GET /api/products/{id}` for the seeded demo
+  product to return `200`.
+- **Negative:** stops the database container and expects `/health/ready` to return `503` while
+  `/health/live` still returns `200`.
+
+It always removes its stack at the end and exits non-zero if any check fails. On WSL without Docker
+Desktop's WSL integration, run it as `DOCKER=docker.exe scripts/smoke-test.sh`.
+
+### How the containers are built
+
+- **One image, three jobs.** The same `product-asset-manager` image runs as the API, the consumer and the
+  migrator. Configuration decides which: `Api__Enabled`, `Consumer__Enabled`, or the `--migrate` argument.
+  Splitting the consumer into its own container means it can be stopped, restarted or scaled without
+  touching the API, and a crash in one does not take down the other.
+- **Multi-stage `Dockerfile`.** The first stage uses the .NET SDK image to restore and publish. The final
+  stage starts again from the much smaller ASP.NET runtime image and copies in only the published output,
+  so the SDK, the source code and the test projects never reach the image that runs.
+- **Non-root.** The container runs as the runtime image's built-in `app` user, so a bug in the app cannot
+  act as root inside the container.
+- **Migrations run once, before the app.** The `migrator` service runs the image with `--migrate`
+  (migrations, roles, the Admin account and the demo product) and exits. `api` and `consumer` wait for it
+  to finish successfully and never migrate themselves (`Database__InitializeOnStartup=false`), so several
+  copies of the API can start at once without racing to change the schema. This is used instead of an EF
+  Core migration bundle because a bundle can only apply migrations, not run the C# seeding.
+- **Configuration comes only from environment variables.** Compose builds the connection strings from
+  `.env`. The emulator's connection string uses its fixed, publicly documented development key, so it is
+  not a secret. The queue definitions live in `docker/servicebus/Config.json`.
+
+### Service Bus emulator limitations
+
+- **It forgets messages when its container restarts.** Restart the consumer, not the emulator.
+- **One shared key, no per-queue policies.** In Azure the app uses separate, least-privilege SAS policies;
+  the emulator only has `RootManageSharedAccessKey`.
+- **Message time-to-live is capped at one hour**, so `DefaultMessageTimeToLive` is `PT1H` in the config.
+- **The first message of a new session can take a few seconds** to be picked up, so a new order may stay
+  `Pending` for up to around ten seconds. Later orders for the same SKU are faster.
+- **It needs its own SQL Server** (`servicebus-sql`) and has no shell for health checks (see *Start-up order*).
+
+## Getting Started (without Docker, against Azure)
+
+This is the path for working on the code with `dotnet run`, using LocalDB and a real Azure Service Bus
+namespace. The existing test suite also runs this way.
 
 ### Prerequisites
 
@@ -327,3 +477,7 @@ It now returns `202` with only an `orderId`, because the outcome is not known ye
 - **`StockDecremented` has no subscriber** — it is published for future consumers.
 - **The order-placing tests need a real Service Bus namespace**, and leave messages behind, as described
   under *Running the tests*.
+- **The Docker stack connects to SQL Server as `sa`.** That is fine for a throwaway local stack; a real
+  deployment would give the app its own login with only the permissions it needs.
+- **The Docker stack is for local use only.** It uses the Service Bus emulator and placeholder secrets
+  from `.env`; it is not a production deployment.
