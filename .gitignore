@@ -483,3 +483,6 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# NuGet packages cached inside the workspace by CI
+.nuget/
