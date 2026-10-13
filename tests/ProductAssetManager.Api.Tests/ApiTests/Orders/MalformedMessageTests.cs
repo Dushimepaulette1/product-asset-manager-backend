@@ -35,7 +35,24 @@ public class MalformedMessageTests : ApiTestBase
         Assert.That(deadLettered, Is.Not.Null, "an unusable message can never succeed, so it must be dead-lettered for inspection");
         Assert.That(deadLettered!.DeadLetterReason, Is.EqualTo("InvalidMessageBody"));
 
-        await deadLetterReceiver.CompleteMessageAsync(deadLettered);
+        await RemoveFromDeadLetterQueueAsync(deadLetterReceiver, deadLettered);
+    }
+
+    private static async Task RemoveFromDeadLetterQueueAsync(ServiceBusReceiver receiver, ServiceBusReceivedMessage message)
+    {
+        try
+        {
+            await receiver.CompleteMessageAsync(message);
+        }
+        catch (ServiceBusException ex) when (ex.Reason == ServiceBusFailureReason.MessageLockLost)
+        {
+            var redelivered = await WaitForDeadLetterAsync(receiver, message.MessageId, TimeSpan.FromSeconds(30));
+
+            if (redelivered is not null)
+            {
+                await receiver.CompleteMessageAsync(redelivered);
+            }
+        }
     }
 
     private static async Task<ServiceBusReceivedMessage?> WaitForDeadLetterAsync(
