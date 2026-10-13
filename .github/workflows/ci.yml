@@ -51,12 +51,18 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'dotnet-tools.json') }}
           restore-keys: nuget-${{ runner.os }}-
 
-      - name: Restore packages
+      - name: Restore tools and packages
         run: |
+          dotnet tool restore
           dotnet restore
 
       - name: Build (Release)
         run: dotnet build --configuration Release --no-restore
+
+      - name: Check every model change has a migration
+        env:
+          Jwt__SigningKey: design-time-placeholder-the-app-needs-one-to-start
+        run: dotnet dotnet-ef migrations has-pending-model-changes --project src --configuration Release --no-build
 
       - name: Wait for SQL Server and the Service Bus emulator
         run: |
