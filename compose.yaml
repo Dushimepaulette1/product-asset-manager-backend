@@ -81,7 +81,11 @@ services:
 
   migrator:
     <<: *app
-    build: .
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-local}
+        GIT_SHA: ${GIT_SHA:-local}
     pull_policy: build
     restart: "no"
     command: ["--migrate"]

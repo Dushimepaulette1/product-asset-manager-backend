@@ -25,6 +25,11 @@ EXPOSE 8080
 
 USER $APP_UID
 
+ARG APP_VERSION=dev
+ARG GIT_SHA=unknown
+ENV Build__Version=$APP_VERSION \
+    Build__CommitSha=$GIT_SHA
+
 HEALTHCHECK --interval=10s --timeout=6s --start-period=30s --retries=5 \
     CMD curl --fail --silent http://localhost:8080/health/ready || exit 1
 

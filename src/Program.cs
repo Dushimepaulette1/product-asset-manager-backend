@@ -10,6 +10,7 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using ProductAssetManager.Api.Data;
+using ProductAssetManager.Api.DTOs;
 using ProductAssetManager.Api.Health;
 using ProductAssetManager.Api.Messaging;
 using ProductAssetManager.Api.Middleware;
@@ -202,6 +203,10 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 {
     Predicate = check => check.Tags.Contains(HealthCheckTags.Ready)
 });
+
+app.MapGet("/version", (IConfiguration configuration) => new VersionResponse(
+    configuration["Build:Version"] ?? "dev",
+    configuration["Build:CommitSha"] ?? "unknown"));
 
 app.Run();
 
