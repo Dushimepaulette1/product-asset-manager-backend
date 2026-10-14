@@ -232,8 +232,13 @@ Desktop's WSL integration, run it as `DOCKER=docker.exe scripts/smoke-test.sh`.
 - **The first message of a new session can take a few seconds** to be picked up, so a new order may stay
   `Pending` for up to around ten seconds. Later orders for the same SKU are faster.
 - **It needs its own SQL Server** (`servicebus-sql`) and has no shell for health checks (see *Start-up order*).
-- **Right after a cold start it can briefly lose a message lock.** `MalformedMessageTests` hit this when
-  completing a dead-lettered message, so its clean-up waits for the message to come back and retries.
+- **It sometimes drops the lock on a dead-lettered message straight after a cold start** (`MessageLockLost`).
+  `MalformedMessageTests` therefore *peeks* at the dead-letter queue, which needs no lock, instead of
+  receiving and completing the message. The dead-lettered test messages are left in place; the emulator
+  starts empty every run anyway.
+- **It can fail to start again after the machine restarts**, if its own SQL Server still holds the
+  previous databases (SQL error 5170 in `docker compose logs servicebus`). Recreate both:
+  `docker compose up -d --force-recreate servicebus-sql servicebus`.
 
 ## CI/CD (GitHub Actions)
 
@@ -459,6 +464,9 @@ host), so tests that don't want it running stay deterministic; the async tests a
 explicitly. Tests that place an order without starting the consumer leave their `OrderPlaced` message in
 the queue. That is harmless — a later consumer completes and discards a message whose order does not exist
 in its database — but it means the queue slowly collects test messages unless you purge it.
+`MalformedMessageTests` also leaves its two deliberately broken messages in the dead-letter queue: it only
+peeks at them to check the dead-letter reason. Purge the dead-letter queue in the Portal now and then if
+you run the suite against Azure often.
 
 ## Demo Credentials
 
