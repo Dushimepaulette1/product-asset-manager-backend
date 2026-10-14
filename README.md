@@ -1,5 +1,7 @@
 # Product Asset Manager — Backend
 
+[![CI/CD](https://github.com/Dushimepaulette1/product-asset-manager-backend/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Dushimepaulette1/product-asset-manager-backend/actions/workflows/ci.yml)
+
 ASP.NET Core Web API backend for an e-commerce inventory and order management platform (Backend Capstone,
 extended with Azure Service Bus).
 
@@ -230,6 +232,83 @@ Desktop's WSL integration, run it as `DOCKER=docker.exe scripts/smoke-test.sh`.
 - **The first message of a new session can take a few seconds** to be picked up, so a new order may stay
   `Pending` for up to around ten seconds. Later orders for the same SKU are faster.
 - **It needs its own SQL Server** (`servicebus-sql`) and has no shell for health checks (see *Start-up order*).
+- **Right after a cold start it can briefly lose a message lock.** `MalformedMessageTests` hit this when
+  completing a dead-lettered message, so its clean-up waits for the message to come back and retries.
+
+## CI/CD (GitHub Actions)
+
+Everything is in one workflow, [`.github/workflows/ci.yml`](.github/workflows/ci.yml). It runs on every
+push to any branch, every pull request, and every `v*` tag.
+
+```
+push / pull request
+   ├── Build and test ─────────────────┐
+   └── Docker build and smoke test ────┼──▶ Publish image to GHCR
+                                       │      (only for a push to main or a v* tag,
+                                       │       and only if both jobs passed)
+```
+
+| Job | What it does |
+|---|---|
+| **Build and test** | restores (NuGet packages are cached between runs), builds in Release, checks every model change has a migration (`dotnet ef migrations has-pending-model-changes`), runs **all** NUnit tests, and uploads the results (`test-results`, a `.trx` file) as an artefact. A failing test fails the job and is shown by name on the run and the pull request. |
+| **Docker build and smoke test** | builds the Docker image, then runs `scripts/smoke-test.sh` (see *Container smoke test*). A broken `Dockerfile` or `compose.yaml` fails here, before merge. |
+| **Publish image to GHCR** | builds and pushes the image to GitHub Container Registry. |
+
+**Where the tests get a database and Service Bus.** Nothing in the cloud. The job starts the `sqlserver`
+and `servicebus` services from `compose.yaml` as containers on the runner, then points the tests at them
+with environment variables (`TEST_SQL_CONNECTION_STRING` and `ServiceBus__*`). Compose is used instead of
+GitHub's `services:` block because the emulator needs its queue file mounted from the repository, and
+service containers start before the code is checked out.
+
+**Secrets.** The workflow contains no secrets and the repository needs none. `scripts/ci-create-env.sh`
+generates a fresh SQL Server password, admin password and JWT key for every run and masks them, so they
+show as `***` in logs. The emulator's key is its public development key. Publishing logs in with the
+built-in `GITHUB_TOKEN`, which GitHub creates for each run and which can only push packages for this
+repository (`packages: write`).
+
+### The image
+
+```
+ghcr.io/dushimepaulette1/product-asset-manager-backend
+```
+
+| What was pushed | Tags it gets | Example |
+|---|---|---|
+| a merge (push) to `main` | the short commit SHA, and `latest` | `3f2a9c1`, `latest` |
+| a tag such as `v1.2.0` | the short commit SHA, the version without the `v`, and the tag itself | `3f2a9c1`, `1.2.0`, `v1.2.0` |
+
+So every image can be traced to the exact commit it was built from, and released versions also have a
+readable name. `latest` is only a convenience for "newest build of `main`"; never deploy it.
+
+The commit is also baked into the image: CI passes it as the `GIT_SHA` build argument (and the branch or tag
+name as `APP_VERSION`), and the app reports them on `GET /version`:
+
+```json
+{ "version": "main", "commit": "3f2a9c1e..." }
+```
+
+To check an image yourself (the placeholder settings are only there because the app refuses to start
+without them; nothing connects to them for this check):
+
+```bash
+docker run --rm -d --name version-check -p 8081:8080 \
+  -e ConnectionStrings__DefaultConnection="Server=none;Database=none;User Id=none;Password=none" \
+  -e ServiceBus__ConnectionString="Endpoint=sb://none;SharedAccessKeyName=none;SharedAccessKey=none" \
+  -e ServiceBus__QueueName=orders \
+  -e ServiceBus__StockEventsConnectionString="Endpoint=sb://none;SharedAccessKeyName=none;SharedAccessKey=none" \
+  -e ServiceBus__StockEventsQueueName=stock-events \
+  -e Jwt__SigningKey=placeholder-key-only-for-a-version-check \
+  -e Database__InitializeOnStartup=false \
+  ghcr.io/dushimepaulette1/product-asset-manager-backend:<short-sha>
+curl http://localhost:8081/version
+docker stop version-check
+```
+
+### Branch protection
+
+`main` is protected: a pull request can only be merged once **Build and test** and **Docker build and
+smoke test** have passed (*Settings → Branches → Branch protection rule for `main` → Require status checks
+to pass before merging*).
 
 ## Getting Started (without Docker, against Azure)
 
@@ -358,6 +437,22 @@ LocalDB. The async tests are the ones to read:
   `Rejected`, final stock exactly 0.
 - `ConsumerRecoveryTests` — stop the consumer, place orders (they stay `Pending`), restart it: every order
   resolves and stock drops by exactly one unit per order.
+
+**Running the tests against containers instead (no LocalDB, no Azure).** This is what CI does. Start the
+infrastructure, then point the tests at it:
+
+```bash
+docker compose up -d --wait sqlserver servicebus
+docker compose run --rm servicebus-ready
+
+export TEST_SQL_CONNECTION_STRING="Server=localhost,14333;User Id=sa;Password=<SQL_SA_PASSWORD from .env>;TrustServerCertificate=True;MultipleActiveResultSets=true"
+export ServiceBus__ConnectionString="Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;"
+export ServiceBus__StockEventsConnectionString="$ServiceBus__ConnectionString"
+export ServiceBus__QueueName=orders ServiceBus__StockEventsQueueName=stock-events
+dotnet test
+```
+
+(From WSL with the Windows `dotnet.exe`, also list these variables in `WSLENV` so Windows sees them.)
 
 In tests the consumer does not start on its own (`ServiceBus:AutoStartConsumer` is `false` in the test
 host), so tests that don't want it running stay deterministic; the async tests above start it
