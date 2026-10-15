@@ -3,10 +3,8 @@ using System.Text.Json.Serialization;
 using Azure.Messaging.ServiceBus;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using ProductAssetManager.Api.Data;
@@ -105,32 +103,7 @@ if (consumerEnabled)
     builder.Services.AddHostedService(sp => sp.GetRequiredService<OrderConsumer>());
 }
 
-var healthCheckTimeout = TimeSpan.FromSeconds(5);
-
-var healthChecks = builder.Services.AddHealthChecks()
-    .AddDbContextCheck<ApplicationDbContext>("database", tags: [HealthCheckTags.Ready])
-    .Add(new HealthCheckRegistration(
-        "orders-queue",
-        sp => new ServiceBusHealthCheck(sp.GetRequiredKeyedService<ServiceBusSender>(ServiceBusQueues.Orders)),
-        failureStatus: null,
-        tags: [HealthCheckTags.Ready]));
-
-if (consumerEnabled)
-{
-    healthChecks.Add(new HealthCheckRegistration(
-        "stock-events-queue",
-        sp => new ServiceBusHealthCheck(sp.GetRequiredKeyedService<ServiceBusSender>(ServiceBusQueues.StockEvents)),
-        failureStatus: null,
-        tags: [HealthCheckTags.Ready]));
-}
-
-builder.Services.Configure<HealthCheckServiceOptions>(options =>
-{
-    foreach (var registration in options.Registrations)
-    {
-        registration.Timeout = healthCheckTimeout;
-    }
-});
+builder.Services.AddApplicationHealthChecks(builder.Configuration, consumerEnabled);
 
 var jwtSigningKey = builder.Configuration["Jwt:SigningKey"]
     ?? throw new InvalidOperationException("Jwt:SigningKey is not configured.");
@@ -194,15 +167,7 @@ if (apiEnabled)
     app.MapControllers();
 }
 
-app.MapHealthChecks("/health/live", new HealthCheckOptions
-{
-    Predicate = _ => false
-});
-
-app.MapHealthChecks("/health/ready", new HealthCheckOptions
-{
-    Predicate = check => check.Tags.Contains(HealthCheckTags.Ready)
-});
+app.MapApplicationHealthChecks();
 
 app.MapGet("/version", (IConfiguration configuration) => new VersionResponse(
     configuration["Build:Version"] ?? "dev",
