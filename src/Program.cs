@@ -104,7 +104,14 @@ if (consumerEnabled)
     builder.Services.AddHostedService(sp => sp.GetRequiredService<OrderConsumer>());
 }
 
-var healthCheckTimeout = TimeSpan.FromSeconds(5);
+var healthCheckTimeoutSeconds = builder.Configuration.GetValue("HealthChecks:TimeoutSeconds", 5);
+
+if (healthCheckTimeoutSeconds <= 0)
+{
+    throw new InvalidOperationException("HealthChecks:TimeoutSeconds must be greater than zero.");
+}
+
+var healthCheckTimeout = TimeSpan.FromSeconds(healthCheckTimeoutSeconds);
 
 var healthChecks = builder.Services.AddHealthChecks()
     .AddDbContextCheck<ApplicationDbContext>("database", tags: [HealthCheckTags.Ready])

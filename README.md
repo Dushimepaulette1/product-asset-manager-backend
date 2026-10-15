@@ -150,6 +150,9 @@ servicebus-sql (healthy) ──▶ servicebus ──▶ servicebus-ready (exits 
 - The emulator image contains no shell, so it cannot health-check itself. `servicebus-ready` (a tiny curl
   container) polls the emulator's `http://servicebus:5300/health` instead and exits once it says `healthy`.
 - `api` and `consumer` report healthy once `GET /health/ready` returns `200`.
+- `/health/live` only says the process is running. `/health/ready` checks the database and the Service Bus
+  queue(s) the process uses, and returns `503` if any of them is unreachable. Each check gives up after
+  `HealthChecks:TimeoutSeconds` seconds (default `5`; set `HealthChecks__TimeoutSeconds` to change it).
 
 ### Try it
 
