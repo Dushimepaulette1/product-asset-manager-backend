@@ -22,7 +22,7 @@ public static class ObservabilityExtensions
         builder.Services.AddSingleton<OrderMetrics>();
         builder.Services.AddSingleton<PendingOrdersMetrics>();
 
-        builder.Services.AddOpenTelemetry()
+        var openTelemetry = builder.Services.AddOpenTelemetry()
             .ConfigureResource(resource => resource
                 .AddService(serviceName, serviceVersion: serviceVersion)
                 .AddAttributes([new KeyValuePair<string, object>("deployment.environment", deploymentEnvironment)]))
@@ -31,21 +31,24 @@ public static class ObservabilityExtensions
                 .AddSource(OrderTelemetry.SourceName)
                 .AddAspNetCoreInstrumentation(options => options.Filter = context => !IsHealthCheck(context.Request.Path))
                 .AddHttpClientInstrumentation()
-                .AddEntityFrameworkCoreInstrumentation()
-                .AddConsoleExporter())
+                .AddEntityFrameworkCoreInstrumentation())
             .WithMetrics(metrics => metrics
                 .AddMeter(OrderMetrics.MeterName)
                 .AddAspNetCoreInstrumentation()
                 .AddHttpClientInstrumentation()
-                .AddRuntimeInstrumentation()
-                .AddConsoleExporter())
+                .AddRuntimeInstrumentation())
             .WithLogging(
-                logging => logging.AddConsoleExporter(),
+                _ => { },
                 options =>
                 {
                     options.IncludeFormattedMessage = true;
                     options.IncludeScopes = true;
                 });
+
+        if (!string.IsNullOrWhiteSpace(configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]))
+        {
+            openTelemetry.UseOtlpExporter();
+        }
 
         return builder;
     }
