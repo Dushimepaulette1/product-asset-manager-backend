@@ -15,6 +15,7 @@ x-app: &app
     SeedAdmin__Email: ${SEED_ADMIN_EMAIL:?Set SEED_ADMIN_EMAIL in .env}
     SeedAdmin__Password: ${SEED_ADMIN_PASSWORD:?Set SEED_ADMIN_PASSWORD in .env}
     Database__InitializeOnStartup: "false"
+    OpenTelemetry__DeploymentEnvironment: ${DEPLOYMENT_ENVIRONMENT:-local}
 
 x-app-dependencies: &app-dependencies
   migrator:
@@ -91,6 +92,7 @@ services:
     command: ["--migrate"]
     environment:
       <<: *app-environment
+      OTEL_SERVICE_NAME: database-migrator
       Seed__DemoData: "true"
     healthcheck:
       disable: true
@@ -102,6 +104,7 @@ services:
     <<: *app
     environment:
       <<: *app-environment
+      OTEL_SERVICE_NAME: inventory-api
       Api__Enabled: "true"
       Consumer__Enabled: "false"
       Swagger__Enabled: "true"
@@ -113,6 +116,7 @@ services:
     <<: *app
     environment:
       <<: *app-environment
+      OTEL_SERVICE_NAME: order-consumer
       Api__Enabled: "false"
       Consumer__Enabled: "true"
     depends_on: *app-dependencies
