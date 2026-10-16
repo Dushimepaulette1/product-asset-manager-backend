@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using OpenTelemetry.Logs;
 using OpenTelemetry.Trace;
 using ProductAssetManager.Api.Data;
 
@@ -11,6 +12,8 @@ namespace ProductAssetManager.Api.Tests.ApiTests;
 public class CustomWebApplicationFactory : WebApplicationFactory<Program>
 {
     public ExportedActivities ExportedActivities { get; } = new();
+
+    public CapturedLogs CapturedLogs { get; } = new();
 
     public CustomWebApplicationFactory()
     {
@@ -50,6 +53,7 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
                 options.UseSqlServer(TestDatabase.ApiTestsConnectionString));
 
             services.ConfigureOpenTelemetryTracerProvider(tracing => tracing.AddInMemoryExporter(ExportedActivities));
+            services.ConfigureOpenTelemetryLoggerProvider(logging => logging.AddProcessor(CapturedLogs));
         });
     }
 }
