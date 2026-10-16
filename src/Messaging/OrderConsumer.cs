@@ -151,34 +151,53 @@ public class OrderConsumer : BackgroundService
         var variant = order.Variant;
         var confirmed = false;
 
-        const int maxAttempts = 3;
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        using (var stockCheckActivity = OrderTelemetry.ActivitySource.StartActivity(OrderTelemetry.StockCheckSpanName))
         {
-            if (variant.Quantity >= order.QuantityPurchased)
+            stockCheckActivity?.SetTag("order.id", order.Id.ToString());
+            stockCheckActivity?.SetTag("variant.sku", variant.SKU);
+            stockCheckActivity?.SetTag("order.quantity", order.QuantityPurchased);
+
+            var saveAttempts = 0;
+
+            const int maxAttempts = 3;
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                variant.Quantity -= order.QuantityPurchased;
-                order.Status = OrderStatus.Confirmed;
-                order.RejectionReason = null;
-                confirmed = true;
-            }
-            else
-            {
-                order.Status = OrderStatus.Rejected;
-                order.RejectionReason = $"Only {variant.Quantity} unit(s) of '{variant.Name}' were available.";
-                confirmed = false;
+                saveAttempts = attempt;
+
+                if (variant.Quantity >= order.QuantityPurchased)
+                {
+                    variant.Quantity -= order.QuantityPurchased;
+                    order.Status = OrderStatus.Confirmed;
+                    order.RejectionReason = null;
+                    confirmed = true;
+                }
+                else
+                {
+                    order.Status = OrderStatus.Rejected;
+                    order.RejectionReason = $"Only {variant.Quantity} unit(s) of '{variant.Name}' were available.";
+                    confirmed = false;
+                }
+
+                try
+                {
+                    await dbContext.SaveChangesAsync(args.CancellationToken);
+                    break;
+                }
+                catch (DbUpdateConcurrencyException ex) when (attempt < maxAttempts)
+                {
+                    foreach (var entry in ex.Entries)
+                    {
+                        await entry.ReloadAsync(args.CancellationToken);
+                    }
+                }
             }
 
-            try
+            stockCheckActivity?.SetTag("order.outcome", confirmed ? OrderTelemetry.OutcomeConfirmed : OrderTelemetry.OutcomeRejected);
+            stockCheckActivity?.SetTag("order.save_attempts", saveAttempts);
+
+            if (!confirmed)
             {
-                await dbContext.SaveChangesAsync(args.CancellationToken);
-                break;
-            }
-            catch (DbUpdateConcurrencyException ex) when (attempt < maxAttempts)
-            {
-                foreach (var entry in ex.Entries)
-                {
-                    await entry.ReloadAsync(args.CancellationToken);
-                }
+                stockCheckActivity?.SetTag("order.rejection_reason", OrderTelemetry.RejectionReasonInsufficientStock);
             }
         }
 

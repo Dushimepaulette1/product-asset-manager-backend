@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -131,6 +132,25 @@ public abstract class ApiTestBase
         await dbContext.SaveChangesAsync();
 
         return variant.Id;
+    }
+
+    protected async Task<Activity?> WaitForSpanAsync(Func<Activity, bool> predicate, TimeSpan? timeout = null)
+    {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(10));
+
+        while (DateTime.UtcNow < deadline)
+        {
+            var match = Factory.ExportedActivities.Snapshot().FirstOrDefault(predicate);
+
+            if (match is not null)
+            {
+                return match;
+            }
+
+            await Task.Delay(200);
+        }
+
+        return null;
     }
 
     protected Task ResumeConsumerAsync()

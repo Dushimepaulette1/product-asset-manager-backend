@@ -36,23 +36,4 @@ public class TracePropagationTests : ApiTestBase
         Assert.That(processSpan, Is.Not.Null, "the consumer should record a processing span for the order");
         Assert.That(processSpan!.TraceId, Is.EqualTo(purchaseRequestSpan.TraceId));
     }
-
-    private async Task<Activity?> WaitForSpanAsync(Func<Activity, bool> predicate)
-    {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-
-        while (DateTime.UtcNow < deadline)
-        {
-            var match = Factory.ExportedActivities.Snapshot().FirstOrDefault(predicate);
-
-            if (match is not null)
-            {
-                return match;
-            }
-
-            await Task.Delay(200);
-        }
-
-        return null;
-    }
 }
