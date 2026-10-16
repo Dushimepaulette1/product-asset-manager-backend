@@ -16,7 +16,7 @@ public class ServiceBusHealthCheck : IHealthCheck
     {
         try
         {
-            using var batch = await _sender.CreateMessageBatchAsync(cancellationToken);
+            using var batch = await _sender.CreateMessageBatchAsync(cancellationToken).AsTask().WaitAsync(cancellationToken);
             return HealthCheckResult.Healthy($"Queue '{_sender.EntityPath}' is reachable.");
         }
         catch (Exception ex)
