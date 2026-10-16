@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Azure.Messaging.ServiceBus;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -5,6 +6,7 @@ using ProductAssetManager.Api.Data;
 using ProductAssetManager.Api.DTOs;
 using ProductAssetManager.Api.Messaging;
 using ProductAssetManager.Api.Models;
+using ProductAssetManager.Api.Observability;
 
 namespace ProductAssetManager.Api.Services;
 
@@ -61,6 +63,14 @@ public class OrderService : IOrderService
 
         try
         {
+            using var publishActivity = OrderTelemetry.ActivitySource.StartActivity(OrderTelemetry.PublishSpanName, ActivityKind.Producer);
+            publishActivity?.SetTag("messaging.system", "servicebus");
+            publishActivity?.SetTag("messaging.destination.name", _ordersSender.EntityPath);
+            publishActivity?.SetTag("messaging.message.id", message.MessageId);
+            publishActivity?.SetTag("order.id", order.Id.ToString());
+
+            MessageTraceContext.Inject(publishActivity ?? Activity.Current, message);
+
             await _ordersSender.SendMessageAsync(message);
         }
         catch

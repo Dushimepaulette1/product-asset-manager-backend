@@ -3,12 +3,15 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using OpenTelemetry.Trace;
 using ProductAssetManager.Api.Data;
 
 namespace ProductAssetManager.Api.Tests.ApiTests;
 
 public class CustomWebApplicationFactory : WebApplicationFactory<Program>
 {
+    public ExportedActivities ExportedActivities { get; } = new();
+
     public CustomWebApplicationFactory()
     {
         Environment.SetEnvironmentVariable("Jwt__Issuer", "TestIssuer");
@@ -45,6 +48,8 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
 
             services.AddDbContext<ApplicationDbContext>(options =>
                 options.UseSqlServer(TestDatabase.ApiTestsConnectionString));
+
+            services.ConfigureOpenTelemetryTracerProvider(tracing => tracing.AddInMemoryExporter(ExportedActivities));
         });
     }
 }

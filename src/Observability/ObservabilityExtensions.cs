@@ -24,6 +24,7 @@ public static class ObservabilityExtensions
                 .AddService(serviceName, serviceVersion: serviceVersion)
                 .AddAttributes([new KeyValuePair<string, object>("deployment.environment", deploymentEnvironment)]))
             .WithTracing(tracing => tracing
+                .AddSource(OrderTelemetry.SourceName)
                 .AddAspNetCoreInstrumentation(options => options.Filter = context => !IsHealthCheck(context.Request.Path))
                 .AddHttpClientInstrumentation()
                 .AddEntityFrameworkCoreInstrumentation()

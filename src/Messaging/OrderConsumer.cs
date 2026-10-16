@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Azure.Messaging.ServiceBus;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using ProductAssetManager.Api.Data;
 using ProductAssetManager.Api.Models;
+using ProductAssetManager.Api.Observability;
 
 namespace ProductAssetManager.Api.Messaging;
 
@@ -89,6 +91,16 @@ public class OrderConsumer : BackgroundService
 
     private async Task ProcessMessageAsync(ProcessSessionMessageEventArgs args)
     {
+        var parentContext = MessageTraceContext.Extract(args.Message);
+
+        using var processActivity = OrderTelemetry.ActivitySource.StartActivity(
+            OrderTelemetry.ProcessSpanName,
+            ActivityKind.Consumer,
+            parentContext.ActivityContext);
+        processActivity?.SetTag("messaging.system", "servicebus");
+        processActivity?.SetTag("messaging.destination.name", _ordersQueueName);
+        processActivity?.SetTag("messaging.message.id", args.Message.MessageId);
+
         using var scope = _scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
@@ -107,6 +119,8 @@ public class OrderConsumer : BackgroundService
                 args.CancellationToken);
             return;
         }
+
+        processActivity?.SetTag("order.id", orderPlaced.OrderId.ToString());
 
         var order = await dbContext.Orders
             .Include(o => o.Variant)

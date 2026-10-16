@@ -106,6 +106,33 @@ public abstract class ApiTestBase
             .FirstAsync();
     }
 
+    protected async Task<Guid> SeedVariantAsync(string sku, int quantity)
+    {
+        using var scope = Factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        var category = new Category { Id = Guid.NewGuid(), Name = $"Category for {sku}" };
+        var variant = new Variant { Id = Guid.NewGuid(), Name = "Standard", SKU = sku, Quantity = quantity };
+
+        dbContext.Categories.Add(category);
+        dbContext.Products.Add(new Product
+        {
+            Id = Guid.NewGuid(),
+            Name = $"Product for {sku}",
+            Description = "Seeded directly for a test",
+            BasePrice = 10.00m,
+            Material = "Test",
+            CategoryId = category.Id,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+            Variants = { variant }
+        });
+
+        await dbContext.SaveChangesAsync();
+
+        return variant.Id;
+    }
+
     protected Task ResumeConsumerAsync()
     {
         var consumer = Factory.Services.GetRequiredService<OrderConsumer>();
