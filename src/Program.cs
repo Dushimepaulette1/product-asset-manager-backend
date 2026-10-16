@@ -133,6 +133,8 @@ builder.Services.AddAuthentication(options =>
 
 var app = builder.Build();
 
+app.UseApplicationObservability();
+
 app.UseExceptionHandler();
 
 if (args.Contains("--migrate"))

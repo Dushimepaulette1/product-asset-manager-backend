@@ -23,8 +23,16 @@ public static class ObservabilityExtensions
             .ConfigureResource(resource => resource
                 .AddService(serviceName, serviceVersion: serviceVersion)
                 .AddAttributes([new KeyValuePair<string, object>("deployment.environment", deploymentEnvironment)]))
-            .WithTracing(tracing => tracing.AddConsoleExporter())
-            .WithMetrics(metrics => metrics.AddConsoleExporter())
+            .WithTracing(tracing => tracing
+                .AddAspNetCoreInstrumentation(options => options.Filter = context => !IsHealthCheck(context.Request.Path))
+                .AddHttpClientInstrumentation()
+                .AddEntityFrameworkCoreInstrumentation()
+                .AddConsoleExporter())
+            .WithMetrics(metrics => metrics
+                .AddAspNetCoreInstrumentation()
+                .AddHttpClientInstrumentation()
+                .AddRuntimeInstrumentation()
+                .AddConsoleExporter())
             .WithLogging(
                 logging => logging.AddConsoleExporter(),
                 options =>
@@ -35,4 +43,25 @@ public static class ObservabilityExtensions
 
         return builder;
     }
+
+    public static WebApplication UseApplicationObservability(this WebApplication app)
+    {
+        app.Use(async (context, next) =>
+        {
+            if (!IsHealthCheck(context.Request.Path))
+            {
+                await next(context);
+                return;
+            }
+
+            using (SuppressInstrumentationScope.Begin())
+            {
+                await next(context);
+            }
+        });
+
+        return app;
+    }
+
+    private static bool IsHealthCheck(PathString path) => path.StartsWithSegments("/health");
 }
