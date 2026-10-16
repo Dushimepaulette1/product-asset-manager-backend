@@ -101,6 +101,7 @@ if (consumerEnabled)
         sp.GetRequiredKeyedService<ServiceBusClient>(ServiceBusQueues.Orders),
         sp.GetRequiredKeyedService<ServiceBusSender>(ServiceBusQueues.StockEvents),
         sp.GetRequiredService<IConfiguration>(),
+        sp.GetRequiredService<OrderMetrics>(),
         sp.GetRequiredService<ILogger<OrderConsumer>>()));
 
     builder.Services.AddHostedService(sp => sp.GetRequiredService<OrderConsumer>());

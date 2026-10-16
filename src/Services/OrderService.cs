@@ -14,13 +14,16 @@ public class OrderService : IOrderService
 {
     private readonly ApplicationDbContext _dbContext;
     private readonly ServiceBusSender _ordersSender;
+    private readonly OrderMetrics _orderMetrics;
 
     public OrderService(
         ApplicationDbContext dbContext,
-        [FromKeyedServices(ServiceBusQueues.Orders)] ServiceBusSender ordersSender)
+        [FromKeyedServices(ServiceBusQueues.Orders)] ServiceBusSender ordersSender,
+        OrderMetrics orderMetrics)
     {
         _dbContext = dbContext;
         _ordersSender = ordersSender;
+        _orderMetrics = orderMetrics;
     }
 
     public async Task<CreateOrderResult> CreateAsync(string userId, CreateOrderRequest request)
@@ -79,6 +82,8 @@ public class OrderService : IOrderService
             await _dbContext.SaveChangesAsync();
             throw;
         }
+
+        _orderMetrics.OrderPlaced();
 
         return new CreateOrderResult(true, false, null, order.Id);
     }

@@ -19,6 +19,9 @@ public static class ObservabilityExtensions
         var deploymentEnvironment = configuration["OpenTelemetry:DeploymentEnvironment"]
             ?? builder.Environment.EnvironmentName.ToLowerInvariant();
 
+        builder.Services.AddSingleton<OrderMetrics>();
+        builder.Services.AddSingleton<PendingOrdersMetrics>();
+
         builder.Services.AddOpenTelemetry()
             .ConfigureResource(resource => resource
                 .AddService(serviceName, serviceVersion: serviceVersion)
@@ -30,6 +33,7 @@ public static class ObservabilityExtensions
                 .AddEntityFrameworkCoreInstrumentation()
                 .AddConsoleExporter())
             .WithMetrics(metrics => metrics
+                .AddMeter(OrderMetrics.MeterName)
                 .AddAspNetCoreInstrumentation()
                 .AddHttpClientInstrumentation()
                 .AddRuntimeInstrumentation()
@@ -47,6 +51,11 @@ public static class ObservabilityExtensions
 
     public static WebApplication UseApplicationObservability(this WebApplication app)
     {
+        if (app.Configuration.GetValue("Api:Enabled", true))
+        {
+            app.Services.GetRequiredService<PendingOrdersMetrics>();
+        }
+
         app.Use(async (context, next) =>
         {
             if (!IsHealthCheck(context.Request.Path))

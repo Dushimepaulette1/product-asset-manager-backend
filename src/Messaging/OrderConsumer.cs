@@ -16,6 +16,7 @@ public class OrderConsumer : BackgroundService
     private readonly ServiceBusSender _stockEventsSender;
     private readonly string _ordersQueueName;
     private readonly bool _autoStart;
+    private readonly OrderMetrics _orderMetrics;
     private readonly ILogger<OrderConsumer> _logger;
     private ServiceBusSessionProcessor? _processor;
 
@@ -24,6 +25,7 @@ public class OrderConsumer : BackgroundService
         ServiceBusClient ordersClient,
         ServiceBusSender stockEventsSender,
         IConfiguration configuration,
+        OrderMetrics orderMetrics,
         ILogger<OrderConsumer> logger)
     {
         _scopeFactory = scopeFactory;
@@ -32,6 +34,7 @@ public class OrderConsumer : BackgroundService
         _ordersQueueName = configuration["ServiceBus:QueueName"]
             ?? throw new InvalidOperationException("ServiceBus:QueueName is not configured.");
         _autoStart = configuration.GetValue("ServiceBus:AutoStartConsumer", true);
+        _orderMetrics = orderMetrics;
         _logger = logger;
     }
 
@@ -200,6 +203,11 @@ public class OrderConsumer : BackgroundService
                 stockCheckActivity?.SetTag("order.rejection_reason", OrderTelemetry.RejectionReasonInsufficientStock);
             }
         }
+
+        _orderMetrics.OrderProcessed(
+            confirmed ? OrderTelemetry.OutcomeConfirmed : OrderTelemetry.OutcomeRejected,
+            confirmed ? null : OrderTelemetry.RejectionReasonInsufficientStock,
+            DateTime.UtcNow - order.OrderDate);
 
         if (confirmed)
         {
