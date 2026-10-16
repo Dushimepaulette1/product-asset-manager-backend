@@ -15,8 +15,12 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
 
     public CapturedLogs CapturedLogs { get; } = new();
 
-    public CustomWebApplicationFactory()
+    private readonly IReadOnlyDictionary<string, string?> _settings;
+
+    public CustomWebApplicationFactory(IReadOnlyDictionary<string, string?>? settings = null)
     {
+        _settings = settings ?? new Dictionary<string, string?>();
+
         Environment.SetEnvironmentVariable("Jwt__Issuer", "TestIssuer");
         Environment.SetEnvironmentVariable("Jwt__Audience", "TestAudience");
         Environment.SetEnvironmentVariable("Jwt__SigningKey", "this-is-a-test-only-signing-key-not-used-anywhere-real");
@@ -26,6 +30,11 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
+
+        foreach (var (key, value) in _settings)
+        {
+            builder.UseSetting(key, value);
+        }
 
         builder.ConfigureAppConfiguration(config =>
         {

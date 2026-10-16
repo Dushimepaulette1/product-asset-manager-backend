@@ -16,6 +16,7 @@ x-app: &app
     SeedAdmin__Password: ${SEED_ADMIN_PASSWORD:?Set SEED_ADMIN_PASSWORD in .env}
     Database__InitializeOnStartup: "false"
     OpenTelemetry__DeploymentEnvironment: ${DEPLOYMENT_ENVIRONMENT:-local}
+    OpenTelemetry__TraceSamplingRatio: ${TRACE_SAMPLING_RATIO:-1.0}
 
 x-app-dependencies: &app-dependencies
   migrator:

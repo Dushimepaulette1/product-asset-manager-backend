@@ -27,6 +27,7 @@ public static class ObservabilityExtensions
                 .AddService(serviceName, serviceVersion: serviceVersion)
                 .AddAttributes([new KeyValuePair<string, object>("deployment.environment", deploymentEnvironment)]))
             .WithTracing(tracing => tracing
+                .SetSampler(services => CreateSampler(services.GetRequiredService<IConfiguration>()))
                 .AddSource(OrderTelemetry.SourceName)
                 .AddAspNetCoreInstrumentation(options => options.Filter = context => !IsHealthCheck(context.Request.Path))
                 .AddHttpClientInstrumentation()
@@ -71,6 +72,18 @@ public static class ObservabilityExtensions
         });
 
         return app;
+    }
+
+    private static Sampler CreateSampler(IConfiguration configuration)
+    {
+        var samplingRatio = configuration.GetValue("OpenTelemetry:TraceSamplingRatio", 1.0);
+
+        if (samplingRatio is < 0 or > 1)
+        {
+            throw new InvalidOperationException("OpenTelemetry:TraceSamplingRatio must be between 0 and 1.");
+        }
+
+        return new ParentBasedSampler(new TraceIdRatioBasedSampler(samplingRatio));
     }
 
     private static bool IsHealthCheck(PathString path) => path.StartsWithSegments("/health");
