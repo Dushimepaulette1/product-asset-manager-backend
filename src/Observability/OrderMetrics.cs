@@ -37,6 +37,14 @@ public class OrderMetrics
             {
                 HistogramBucketBoundaries = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000, 120000, 300000]
             });
+
+        _ordersPlaced.Add(0);
+        _ordersProcessed.Add(0, new TagList { { "outcome", OrderTelemetry.OutcomeConfirmed } });
+        _ordersProcessed.Add(0, new TagList
+        {
+            { "outcome", OrderTelemetry.OutcomeRejected },
+            { "rejection_reason", OrderTelemetry.RejectionReasonInsufficientStock }
+        });
     }
 
     public void OrderPlaced() => _ordersPlaced.Add(1);
