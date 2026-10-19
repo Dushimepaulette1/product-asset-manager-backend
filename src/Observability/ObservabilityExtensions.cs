@@ -55,6 +55,7 @@ public static class ObservabilityExtensions
 
     public static WebApplication UseApplicationObservability(this WebApplication app)
     {
+        app.Services.GetService<MeterProvider>();
         app.Services.GetRequiredService<OrderMetrics>();
 
         if (app.Configuration.GetValue("Api:Enabled", true))
