@@ -96,8 +96,10 @@ Docker runs the API, the order consumer, SQL Server and a local Service Bus emul
 
 - **Docker Desktop** (Windows/macOS) or **Docker Engine 24+** (Linux) with **Docker Compose v2.20+**.
   Tested with Docker 29.1.3 and Compose v2.40.3. Check yours with `docker version` and `docker compose version`.
-- About **6 GB of memory** available to Docker (two SQL Server containers are the heavy part).
-- Free ports `8080`, `14333`, `5672` and `5300`, or change them in `.env`.
+- About **8 GB of memory** available to Docker. The two SQL Servers are the heavy part; each is capped at
+  1.5 GB (`MSSQL_MEMORY_LIMIT_MB`) because by default SQL Server takes up to 80% of the memory it can see.
+- Free ports `8080`, `14333`, `5672`, `5300`, `4317`, `4318`, `3200`, `3100`, `9090` and `3000`, or change
+  them in `.env`.
 
 ### Start and stop
 
@@ -135,8 +137,14 @@ images download and SQL Server initialises. The stack is ready when `api` and `c
 | `servicebus` | Azure Service Bus emulator with the `orders` (sessions) and `stock-events` queues | AMQP `localhost:5672`, management `http://localhost:5300` |
 | `servicebus-sql` | the emulator's own SQL Server (the emulator needs one) | not published |
 | `servicebus-ready` | one-off job that waits until the emulator reports healthy, then exits | — |
+| `grafana` | dashboards, traces and logs in one place | `http://localhost:3000` (login: `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` from `.env`) |
+| `otel-collector` | OpenTelemetry Collector: receives all telemetry and forwards it | OTLP gRPC `localhost:4317`, OTLP HTTP `localhost:4318` |
+| `tempo` | trace storage | `http://localhost:3200` |
+| `loki` | log storage | `http://localhost:3100` |
+| `prometheus` | metric storage, data kept in the `prometheus-data` volume | `http://localhost:9090` |
 
-All ports come from `.env` (`API_PORT`, `SQL_PORT`, `SERVICEBUS_PORT`, `SERVICEBUS_MANAGEMENT_PORT`).
+All ports come from `.env` (`API_PORT`, `SQL_PORT`, `SERVICEBUS_PORT`, `SERVICEBUS_MANAGEMENT_PORT`,
+`OTLP_GRPC_PORT`, `OTLP_HTTP_PORT`, `TEMPO_PORT`, `LOKI_PORT`, `PROMETHEUS_PORT`, `GRAFANA_PORT`).
 
 ### Start-up order
 
@@ -242,6 +250,124 @@ Desktop's WSL integration, run it as `DOCKER=docker.exe scripts/smoke-test.sh`.
 - **It can fail to start again after the machine restarts**, if its own SQL Server still holds the
   previous databases (SQL error 5170 in `docker compose logs servicebus`). Recreate both:
   `docker compose up -d --force-recreate servicebus-sql servicebus`.
+
+## Observability (OpenTelemetry and Grafana)
+
+The API and the consumer are instrumented with OpenTelemetry. Everything runs locally in the same
+`docker compose up`; no hosted service is used.
+
+```
+api ─┐                           ┌──▶ tempo (traces) ──┐
+     ├── OTLP ──▶ otel-collector ├──▶ prometheus (metrics) ├──▶ grafana
+consumer ┘                       └──▶ loki (logs) ─────┘
+```
+
+The app only ever talks to the Collector, never to a storage back end, so changing where telemetry goes is
+a Collector config change (`docker/otel-collector/config.yaml`), not an app change.
+
+### What is recorded
+
+| Signal | Contents |
+|---|---|
+| **Traces** | every HTTP request (health checks excluded), every EF Core query, `OrderPlaced publish` when the message is sent, `OrderPlaced process` in the consumer, and `order.stock_check` around the stock decision, the decrement and `SaveChanges()` (attributes `order.id`, `variant.sku`, `order.quantity`, `order.outcome`, `order.rejection_reason`, `order.save_attempts`). One purchase is **one trace** across both services. |
+| **Metrics** | HTTP request count and duration per route and status code; .NET runtime (GC, memory, threads, JIT); `orders.placed`; `orders.processed` tagged with `outcome` and `rejection_reason`; `orders.processing.duration` (ms, from `Pending` to the final status); `orders.pending`; `orders.pending.oldest_age` (s). |
+| **Logs** | everything written through `ILogger`, with the message template and its fields kept separate, and the trace id and span id of the request or message it was written in. |
+
+Every signal carries `service.name` (`inventory-api`, `order-consumer` or `database-migrator`),
+`service.version` (the commit SHA the image was built from) and `deployment.environment`.
+
+**How the trace crosses Service Bus.** The API writes the W3C `traceparent` of its publish span into the
+`OrderPlaced` message's application properties. The consumer reads it back and starts its processing span
+as a child, so the consumer's work belongs to the buyer's trace. The Azure SDK's own tracing was not used
+because it *links* the consumer span to a new trace rather than continuing the same one.
+
+**Privacy.** No email, name, user id or token is put in a span attribute, a metric tag or a log. Metric tags
+are low-cardinality on purpose: no order ids, user ids or SKUs.
+
+### Settings
+
+| Setting (environment variable) | Default | Meaning |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | not set | where to send telemetry. Compose sets `http://otel-collector:4317`; when it is not set (tests, plain `dotnet run`) nothing is exported. |
+| `OTEL_SERVICE_NAME` | `product-asset-manager` | `service.name`; Compose sets it per container |
+| `OpenTelemetry__TraceSamplingRatio` (`TRACE_SAMPLING_RATIO` in `.env`) | `1.0` | share of traces kept, 0 to 1. Parent-based, so the consumer follows the API's decision and a purchase's trace is never half kept. |
+| `OpenTelemetry__DeploymentEnvironment` | the ASP.NET Core environment name | `deployment.environment`; Compose sets `local` |
+| `OTEL_METRIC_EXPORT_INTERVAL` | 60000 ms | Compose sets 10000 so the dashboard and the alert react quickly |
+
+### Find a purchase's trace, logs and metrics
+
+1. Start the stack (`docker compose up -d`) and place a purchase as in *Try it* above. Note the `orderId`.
+2. Open Grafana at `http://localhost:3000` and log in with `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD`
+   from your `.env`.
+3. **Trace:** *Explore* → data source **Tempo** → query type *TraceQL* →
+   `{ span.order.id = "<orderId>" }` → open the trace. You see `POST api/orders` and its database queries
+   and `OrderPlaced publish` in `inventory-api`, then `OrderPlaced process`, `order.stock_check` and the
+   `SaveChanges()` query in `order-consumer`, all in one trace.
+4. **Logs:** *Explore* → data source **Loki** → `{service_name="order-consumer"} |= "<orderId>"`. Expand the
+   "confirmed" line and click **View trace in Tempo** to jump to the same trace. From a span in Tempo,
+   *Logs for this span* goes the other way.
+5. **Metrics:** *Dashboards* → folder **Product Asset Manager** → **Product Asset Manager**. Within about
+   10 seconds the confirmed count, the processing time and the request rate include the purchase.
+
+**Telemetry never breaks the shop.** Stop the Collector (`docker compose stop otel-collector`) and buy
+again: the API still returns `202` and the order is still confirmed; that telemetry is simply dropped.
+`docker compose start otel-collector` brings it back. Nothing depends on the Collector in `compose.yaml`.
+
+### The dashboard
+
+Provisioned from `docker/grafana/dashboards/product-asset-manager.json`:
+
+- **Orders:** confirmed and rejected in the selected range, orders placed, `Pending` now, the oldest
+  `Pending` order, confirmed vs rejected over time, and the 95th percentile processing time.
+- **HTTP (inventory-api, health checks excluded):** request rate, 5xx error rate and 95th percentile latency
+  per endpoint.
+
+The range totals use "highest minus lowest value" rather than `increase()`, because `increase()`
+extrapolates and would show fractions such as 6.3. The order counters are recorded as 0 when each process
+starts, so even a burst that lands inside the first export is counted.
+
+### The alert: orders stuck in `Pending`
+
+Provisioned from `docker/grafana/provisioning/alerting/alerts.yaml`. It fires when
+`orders_pending_oldest_age_seconds` has been **above 120 seconds for 30 seconds**.
+
+**Why 2 minutes.** Orders normally resolve within seconds (95th percentile about 1.3 s locally; the slowest
+normal case is the emulator picking up a brand-new session, about 10 s). 120 seconds is more than ten times
+that, so a slow moment or a consumer restart (30 to 60 s) does not fire it, but a customer is never left
+waiting long before someone hears that the consumer is down, failing or behind. The extra 30 seconds stops
+a single odd sample from firing it. Checked locally: with the consumer stopped, the alert went *pending* at
+about 140 s, *firing* at about 170 s, and back to normal about 20 s after the consumer restarted.
+
+### Observed load test
+
+The Stage 3 load scenario against the running stack:
+
+```bash
+docker compose up -d
+scripts/observed-load-test.sh
+```
+
+It sets the demo chair's stock to 6, fires 20 purchases at the same moment, waits for every order, and
+expects exactly 6 `Confirmed` and 14 `Rejected`. Then open the dashboard with a time range covering the last
+few minutes.
+
+![Dashboard after the load test: 6 confirmed, 14 rejected](docs/screenshots/load-test-dashboard.png)
+
+![One purchase trace crossing from the API to the consumer](docs/screenshots/purchase-trace.png)
+
+### Observability tests (NUnit)
+
+They run in-process with `WebApplicationFactory` and the OpenTelemetry in-memory exporter:
+
+- `TracePropagationTests` — the purchase's HTTP request span and the consumer's processing span share one
+  trace id.
+- `OrderMetricsTests` — one confirmed and one rejected purchase record exactly one `confirmed` and one
+  `rejected` (`insufficient_stock`) on the orders-processed counter.
+- `StockCheckSpanTests` — the stock check span sits inside the processing span, wraps the `SaveChanges()`
+  query, and records the outcome and the rejection reason.
+- `StructuredLogTests` — the consumer's log keeps its template and fields and carries the purchase's trace
+  id and the processing span's id.
+- `TraceSamplingTests` — the default keeps every trace; a ratio of 0 keeps none.
 
 ## CI/CD (GitHub Actions)
 
@@ -462,6 +588,10 @@ dotnet test
 
 (From WSL with the Windows `dotnet.exe`, also list these variables in `WSLENV` so Windows sees them.)
 
+**Do not run the tests while the Docker stack's `consumer` container is running.** It listens to the same
+emulator queue as the test host and can take the tests' messages first, leaving their orders `Pending`. Stop
+it with `docker compose stop api consumer` before `dotnet test`.
+
 In tests the consumer does not start on its own (`ServiceBus:AutoStartConsumer` is `false` in the test
 host), so tests that don't want it running stay deterministic; the async tests above start it
 explicitly. Tests that place an order without starting the consumer leave their `OrderPlaced` message in
@@ -587,3 +717,8 @@ It now returns `202` with only an `orderId`, because the outcome is not known ye
   deployment would give the app its own login with only the permissions it needs.
 - **The Docker stack is for local use only.** It uses the Service Bus emulator and placeholder secrets
   from `.env`; it is not a production deployment.
+- **Tempo and Loki keep their data inside their containers**, so traces and logs are lost when those
+  containers are recreated. Prometheus keeps metrics in a named volume.
+- **EF Core instrumentation is a pre-release package** (`OpenTelemetry.Instrumentation.EntityFrameworkCore`
+  1.20.0-beta.1). It has never had a stable release; the rest of the OpenTelemetry packages are stable 1.20.0.
+- **Tempo is pinned to 2.9.0**, the last 2.x release, rather than the newer 3.x line.
