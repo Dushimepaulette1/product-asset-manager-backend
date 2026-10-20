@@ -213,6 +213,8 @@ everyday stack first because the ports are the same), then:
 
 It always removes its stack at the end and exits non-zero if any check fails. On WSL without Docker
 Desktop's WSL integration, run it as `DOCKER=docker.exe scripts/smoke-test.sh`.
+With `SMOKE_TEST_SKIP_BUILD=true` it tests the `product-asset-manager:local` image that is already built
+instead of building one; CI uses this so the smoke test checks the exact image it later publishes.
 
 ### How the containers are built
 
@@ -385,8 +387,14 @@ push / pull request
 | Job | What it does |
 |---|---|
 | **Build and test** | restores (NuGet packages are cached between runs), builds in Release, checks every model change has a migration (`dotnet ef migrations has-pending-model-changes`), runs **all** NUnit tests, and uploads the results (`test-results`, a `.trx` file) as an artefact. A failing test fails the job and is shown by name on the run and the pull request. |
-| **Docker build and smoke test** | builds the Docker image, then runs `scripts/smoke-test.sh` (see *Container smoke test*). A broken `Dockerfile` or `compose.yaml` fails here, before merge. |
-| **Publish image to GHCR** | builds and pushes the image to GitHub Container Registry. |
+| **Docker build and smoke test** | builds the Docker image **once**, then runs `scripts/smoke-test.sh` against that exact image (see *Container smoke test*). A broken `Dockerfile` or `compose.yaml` fails here, before merge. |
+| **Publish image to GHCR** | does **not** build. It receives the image the smoke test passed, checks its image ID matches, then tags it and pushes it to GitHub Container Registry. |
+
+**Build once, ship what was tested.** The image is built a single time, in the Docker job. On a push to `main`
+or a `v*` tag, that job saves the tested image as a short-lived artefact (kept one day) together with its
+image ID, Docker's fingerprint of the image's exact contents. The publish job loads it, refuses to continue
+if the ID differs, and only then pushes it. So the published image is byte-for-byte the one that passed the
+smoke test, even if a base image or a package changes in the meantime.
 
 **Where the tests get a database and Service Bus.** Nothing in the cloud. The job starts the `sqlserver`
 and `servicebus` services from `compose.yaml` as containers on the runner, then points the tests at them

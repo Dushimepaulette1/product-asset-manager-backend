@@ -23,11 +23,6 @@ jobs:
     name: Build and test
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      ServiceBus__ConnectionString: "Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;"
-      ServiceBus__QueueName: orders
-      ServiceBus__StockEventsConnectionString: "Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;"
-      ServiceBus__StockEventsQueueName: stock-events
 
     steps:
       - name: Check out the code
@@ -92,48 +87,20 @@ jobs:
     name: Docker build and smoke test
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      image-id: ${{ steps.build.outputs.image-id }}
+      tags: ${{ steps.meta.outputs.tags }}
 
     steps:
       - name: Check out the code
         uses: actions/checkout@v7
 
-      - name: Create throwaway settings for this run
-        run: scripts/ci-create-env.sh
+      - name: Decide whether this run publishes the image
+        id: plan
+        run: echo "publish=${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}" >> "$GITHUB_OUTPUT"
 
-      - name: Build the Docker image
-        env:
-          APP_VERSION: ${{ github.ref_name }}
-          GIT_SHA: ${{ github.sha }}
-        run: docker compose build migrator
-
-      - name: Run the container smoke test
-        run: scripts/smoke-test.sh
-
-  publish:
-    name: Publish image to GHCR
-    needs: [build-and-test, docker]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Check out the code
-        uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Work out the image tags
+      - name: Work out the image tags and labels
         id: meta
         uses: docker/metadata-action@v6
         with:
@@ -144,15 +111,87 @@ jobs:
             type=ref,event=tag
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push the image
-        uses: docker/build-push-action@v7
+      - name: Build the Docker image once
+        id: build
+        env:
+          LABELS: ${{ steps.meta.outputs.labels }}
+        run: |
+          label_options=()
+          while IFS= read -r label; do
+            [ -n "$label" ] && label_options+=(--label "$label")
+          done <<< "$LABELS"
+
+          docker build \
+            --build-arg APP_VERSION="${{ github.ref_name }}" \
+            --build-arg GIT_SHA="${{ github.sha }}" \
+            "${label_options[@]}" \
+            --tag product-asset-manager:local \
+            .
+
+          echo "image-id=$(docker image inspect --format '{{.Id}}' product-asset-manager:local)" >> "$GITHUB_OUTPUT"
+
+      - name: Create throwaway settings for this run
+        run: scripts/ci-create-env.sh
+
+      - name: Run the container smoke test against that image
+        env:
+          SMOKE_TEST_SKIP_BUILD: "true"
+        run: scripts/smoke-test.sh
+
+      - name: Save the tested image for the publish job
+        if: steps.plan.outputs.publish == 'true'
+        run: docker save product-asset-manager:local | gzip > tested-image.tar.gz
+
+      - name: Hand the tested image to the publish job
+        if: steps.plan.outputs.publish == 'true'
+        uses: actions/upload-artifact@v7
         with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            APP_VERSION=${{ github.ref_name }}
-            GIT_SHA=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          name: tested-image
+          path: tested-image.tar.gz
+          retention-days: 1
+
+  publish:
+    name: Publish image to GHCR
+    needs: [build-and-test, docker]
+    if: needs.docker.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download the tested image
+        uses: actions/download-artifact@v8
+        with:
+          name: tested-image
+
+      - name: Load it and check it is the image that passed the smoke test
+        env:
+          TESTED_IMAGE_ID: ${{ needs.docker.outputs.image-id }}
+        run: |
+          gunzip -c tested-image.tar.gz | docker load
+          loaded_image_id=$(docker image inspect --format '{{.Id}}' product-asset-manager:local)
+          echo "Tested image: $TESTED_IMAGE_ID"
+          echo "Loaded image: $loaded_image_id"
+          if [ "$loaded_image_id" != "$TESTED_IMAGE_ID" ]; then
+            echo "::error::The image to publish is not the one that passed the smoke test."
+            exit 1
+          fi
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push the tested image
+        env:
+          TAGS: ${{ needs.docker.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            docker tag product-asset-manager:local "$tag"
+            docker push "$tag"
+          done <<< "$TAGS"
