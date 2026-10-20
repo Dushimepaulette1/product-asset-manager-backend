@@ -2,8 +2,9 @@
 #
 # Creates a .env for CI from .env.example, with random passwords and keys
 # generated for this run only. In GitHub Actions every generated value is
-# masked, so it shows as *** if anything ever prints it, and the test
-# database connection string is exported for the following steps.
+# masked, so it shows as *** if anything ever prints it, and the settings
+# the tests need (database and Service Bus emulator) are exported for the
+# following steps.
 
 set -euo pipefail
 
@@ -25,9 +26,17 @@ sed \
   -e "s/^JWT_SIGNING_KEY=.*/JWT_SIGNING_KEY=$jwt_signing_key/" \
   .env.example > .env
 
+source scripts/lib/settings.sh
+
 if [ -n "${GITHUB_ENV:-}" ]; then
-  sql_port=$(grep -E '^SQL_PORT=' .env | cut -d= -f2)
-  echo "TEST_SQL_CONNECTION_STRING=Server=localhost,$sql_port;User Id=sa;Password=$sql_password;TrustServerCertificate=True;MultipleActiveResultSets=true" >> "$GITHUB_ENV"
+  servicebus_connection="Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;"
+  {
+    echo "TEST_SQL_CONNECTION_STRING=Server=localhost,$(setting SQL_PORT);User Id=sa;Password=$sql_password;TrustServerCertificate=True;MultipleActiveResultSets=true"
+    echo "ServiceBus__ConnectionString=$servicebus_connection"
+    echo "ServiceBus__StockEventsConnectionString=$servicebus_connection"
+    echo "ServiceBus__QueueName=orders"
+    echo "ServiceBus__StockEventsQueueName=stock-events"
+  } >> "$GITHUB_ENV"
 fi
 
 echo "Created .env with freshly generated passwords"
