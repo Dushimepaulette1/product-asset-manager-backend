@@ -16,4 +16,22 @@ public class HealthEndpointTests : ApiTestBase
         var body = await response.Content.ReadAsStringAsync();
         Assert.That(body, Does.Contain("\"status\":\"ok\""));
     }
+
+    [Test]
+    public async Task When_GettingLiveEndpoint_Should_ReturnHealthy()
+    {
+        var response = await Client.GetAsync("/health/live");
+
+        Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.OK));
+        Assert.That(await response.Content.ReadAsStringAsync(), Is.EqualTo("Healthy"));
+    }
+
+    [Test]
+    public async Task When_DatabaseAndServiceBusAreReachable_Should_ReportReady()
+    {
+        var response = await Client.GetAsync("/health/ready");
+
+        Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.OK));
+        Assert.That(await response.Content.ReadAsStringAsync(), Is.EqualTo("Healthy"));
+    }
 }

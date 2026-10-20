@@ -48,6 +48,7 @@ public class OrderConsumer : BackgroundService
         if (_autoStart)
         {
             await _processor.StartProcessingAsync(stoppingToken);
+            _logger.LogInformation("Order consumer is listening on queue {QueueName}", _ordersQueueName);
         }
 
         try
