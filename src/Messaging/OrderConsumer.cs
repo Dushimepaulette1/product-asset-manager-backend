@@ -153,6 +153,8 @@ public class OrderConsumer : BackgroundService
 
         var variant = order.Variant;
         var confirmed = false;
+        string outcome;
+        string? rejectionReason;
 
         using (var stockCheckActivity = OrderTelemetry.ActivitySource.StartActivity(OrderTelemetry.StockCheckSpanName))
         {
@@ -195,19 +197,15 @@ public class OrderConsumer : BackgroundService
                 }
             }
 
-            stockCheckActivity?.SetTag("order.outcome", confirmed ? OrderTelemetry.OutcomeConfirmed : OrderTelemetry.OutcomeRejected);
-            stockCheckActivity?.SetTag("order.save_attempts", saveAttempts);
+            outcome = confirmed ? OrderTelemetry.OutcomeConfirmed : OrderTelemetry.OutcomeRejected;
+            rejectionReason = confirmed ? null : OrderTelemetry.RejectionReasonInsufficientStock;
 
-            if (!confirmed)
-            {
-                stockCheckActivity?.SetTag("order.rejection_reason", OrderTelemetry.RejectionReasonInsufficientStock);
-            }
+            stockCheckActivity?.SetTag("order.outcome", outcome);
+            stockCheckActivity?.SetTag("order.rejection_reason", rejectionReason);
+            stockCheckActivity?.SetTag("order.save_attempts", saveAttempts);
         }
 
-        _orderMetrics.OrderProcessed(
-            confirmed ? OrderTelemetry.OutcomeConfirmed : OrderTelemetry.OutcomeRejected,
-            confirmed ? null : OrderTelemetry.RejectionReasonInsufficientStock,
-            DateTime.UtcNow - order.OrderDate);
+        _orderMetrics.OrderProcessed(outcome, rejectionReason, DateTime.UtcNow - order.OrderDate);
 
         if (confirmed)
         {
