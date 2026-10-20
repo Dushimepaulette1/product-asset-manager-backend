@@ -34,8 +34,6 @@ public class MalformedMessageTests : ApiTestBase
 
         Assert.That(deadLettered, Is.Not.Null, "an unusable message can never succeed, so it must be dead-lettered for inspection");
         Assert.That(deadLettered!.DeadLetterReason, Is.EqualTo("InvalidMessageBody"));
-
-        await deadLetterReceiver.CompleteMessageAsync(deadLettered);
     }
 
     private static async Task<ServiceBusReceivedMessage?> WaitForDeadLetterAsync(
@@ -47,27 +45,40 @@ public class MalformedMessageTests : ApiTestBase
 
         while (DateTime.UtcNow < deadline)
         {
-            var messages = await receiver.ReceiveMessagesAsync(20, TimeSpan.FromSeconds(3));
-            ServiceBusReceivedMessage? match = null;
-
-            foreach (var message in messages)
-            {
-                if (message.MessageId == messageId)
-                {
-                    match = message;
-                }
-                else
-                {
-                    await receiver.AbandonMessageAsync(message);
-                }
-            }
+            var match = await PeekForMessageAsync(receiver, messageId);
 
             if (match is not null)
             {
                 return match;
             }
+
+            await Task.Delay(TimeSpan.FromSeconds(1));
         }
 
         return null;
+    }
+
+    private static async Task<ServiceBusReceivedMessage?> PeekForMessageAsync(ServiceBusReceiver receiver, string messageId)
+    {
+        long fromSequenceNumber = 0;
+
+        while (true)
+        {
+            var page = await receiver.PeekMessagesAsync(100, fromSequenceNumber);
+
+            if (page.Count == 0)
+            {
+                return null;
+            }
+
+            var match = page.FirstOrDefault(message => message.MessageId == messageId);
+
+            if (match is not null)
+            {
+                return match;
+            }
+
+            fromSequenceNumber = page[^1].SequenceNumber + 1;
+        }
     }
 }

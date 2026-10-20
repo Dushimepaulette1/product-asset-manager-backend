@@ -12,17 +12,18 @@
 # Stop your everyday stack first if it uses the same ports.
 #
 # Usage: scripts/smoke-test.sh
-# Optional: DOCKER=docker.exe (WSL without Docker integration), API_PORT=8080
+# Optional: DOCKER=docker.exe (WSL without Docker integration), API_PORT=8080,
+#           SMOKE_TEST_SKIP_BUILD=true to test the product-asset-manager:local
+#           image that is already built instead of building it again (CI).
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+source scripts/lib/settings.sh
 
 DOCKER="${DOCKER:-docker}"
 PROJECT_NAME="${SMOKE_PROJECT_NAME:-pam-smoke-test}"
-ENV_FILE=".env"
-[ -f "$ENV_FILE" ] || ENV_FILE=".env.example"
-API_PORT="${API_PORT:-$(grep -E '^API_PORT=' "$ENV_FILE" | cut -d= -f2 || true)}"
+API_PORT="${API_PORT:-$(setting API_PORT)}"
 BASE_URL="http://localhost:${API_PORT:-8080}"
 DEMO_PRODUCT_ID="22222222-2222-2222-2222-222222222222"
 STARTUP_TIMEOUT_SECONDS="${STARTUP_TIMEOUT_SECONDS:-600}"
@@ -30,7 +31,7 @@ STARTUP_TIMEOUT_SECONDS="${STARTUP_TIMEOUT_SECONDS:-600}"
 failures=0
 
 compose() {
-  "$DOCKER" compose --project-name "$PROJECT_NAME" --env-file "$ENV_FILE" "$@"
+  "$DOCKER" compose --project-name "$PROJECT_NAME" --env-file "$SETTINGS_FILE" "$@"
 }
 
 teardown() {
@@ -66,8 +67,13 @@ check() {
   fi
 }
 
-echo "Starting the stack with $ENV_FILE (this can take a few minutes the first time)"
-compose up --detach --build
+BUILD_OPTION="--build"
+if [ "${SMOKE_TEST_SKIP_BUILD:-false}" = "true" ]; then
+  BUILD_OPTION="--no-build"
+fi
+
+echo "Starting the stack with $SETTINGS_FILE (this can take a few minutes the first time)"
+compose up --detach "$BUILD_OPTION"
 
 echo "Waiting for $BASE_URL/health/ready"
 if ! wait_for_status /health/ready 200 "$STARTUP_TIMEOUT_SECONDS"; then
