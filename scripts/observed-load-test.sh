@@ -12,10 +12,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-
-ENV_FILE=".env"
-[ -f "$ENV_FILE" ] || ENV_FILE=".env.example"
-setting() { grep -E "^$1=" "$ENV_FILE" | cut -d= -f2-; }
+source scripts/lib/settings.sh
 
 BASE_URL="http://localhost:$(setting API_PORT)"
 ADMIN_EMAIL="$(setting SEED_ADMIN_EMAIL)"
