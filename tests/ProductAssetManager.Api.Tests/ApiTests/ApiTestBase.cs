@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -7,6 +8,7 @@ using ProductAssetManager.Api.Data;
 using ProductAssetManager.Api.DTOs;
 using ProductAssetManager.Api.Messaging;
 using ProductAssetManager.Api.Models;
+using ProductAssetManager.Api.Observability;
 using ProductAssetManager.Api.Services;
 
 namespace ProductAssetManager.Api.Tests.ApiTests;
@@ -152,6 +154,30 @@ public abstract class ApiTestBase
 
         return null;
     }
+
+    protected async Task SignInAsShopperAndStartConsumerAsync()
+    {
+        Client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await CreateUserTokenAsync());
+        await ResumeConsumerAsync();
+    }
+
+    protected async Task<Guid> PlaceOrderAndWaitForStatusAsync(Guid variantId, int quantity, OrderStatus expectedStatus)
+    {
+        var response = await Client.PostAsJsonAsync("/api/orders", new CreateOrderRequest { VariantId = variantId, Quantity = quantity });
+        var accepted = await response.Content.ReadFromJsonAsync<OrderAcceptedResponse>();
+
+        var resolved = await PollUntilResolvedAsync(accepted!.OrderId, TimeSpan.FromSeconds(30));
+        Assert.That(resolved.Status, Is.EqualTo(expectedStatus));
+
+        return accepted.OrderId;
+    }
+
+    protected Task<Activity?> WaitForOrderSpanAsync(string spanName, Guid orderId) =>
+        WaitForSpanAsync(span => span.DisplayName == spanName && span.GetTagItem("order.id") as string == orderId.ToString());
+
+    protected Activity PurchaseRequestSpan() =>
+        Factory.ExportedActivities.Snapshot().Single(span =>
+            span.Kind == ActivityKind.Server && span.DisplayName == "POST api/orders");
 
     protected Task ResumeConsumerAsync()
     {

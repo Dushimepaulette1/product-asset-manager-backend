@@ -1,7 +1,4 @@
 using System.Diagnostics;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
-using ProductAssetManager.Api.DTOs;
 using ProductAssetManager.Api.Models;
 using ProductAssetManager.Api.Observability;
 using ProductAssetManager.Api.Tests.ApiTests;
@@ -14,21 +11,17 @@ public class StockCheckSpanTests : ApiTestBase
     private const string Sku = "STOCK-CHECK-SPAN-SKU";
 
     [SetUp]
-    public async Task AuthorizeAsUserAndStartConsumer()
-    {
-        Client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await CreateUserTokenAsync());
-        await ResumeConsumerAsync();
-    }
+    public Task SignInAndStartConsumer() => SignInAsShopperAndStartConsumerAsync();
 
     [Test]
     public async Task When_OrderIsConfirmed_Should_RecordTheStockCheckWithItsOutcomeAroundTheSave()
     {
         var variantId = await SeedVariantAsync(Sku, 5);
 
-        var orderId = await PlaceOrderAndWaitAsync(variantId, 2, OrderStatus.Confirmed);
+        var orderId = await PlaceOrderAndWaitForStatusAsync(variantId, 2, OrderStatus.Confirmed);
 
-        var processSpan = await WaitForSpanAsync(span => IsSpanFor(span, OrderTelemetry.ProcessSpanName, orderId));
-        var stockCheckSpan = await WaitForSpanAsync(span => IsSpanFor(span, OrderTelemetry.StockCheckSpanName, orderId));
+        var processSpan = await WaitForOrderSpanAsync(OrderTelemetry.ProcessSpanName, orderId);
+        var stockCheckSpan = await WaitForOrderSpanAsync(OrderTelemetry.StockCheckSpanName, orderId);
 
         Assert.That(processSpan, Is.Not.Null);
         Assert.That(stockCheckSpan, Is.Not.Null);
@@ -48,26 +41,12 @@ public class StockCheckSpanTests : ApiTestBase
     {
         var variantId = await SeedVariantAsync(Sku, 1);
 
-        var orderId = await PlaceOrderAndWaitAsync(variantId, 3, OrderStatus.Rejected);
+        var orderId = await PlaceOrderAndWaitForStatusAsync(variantId, 3, OrderStatus.Rejected);
 
-        var stockCheckSpan = await WaitForSpanAsync(span => IsSpanFor(span, OrderTelemetry.StockCheckSpanName, orderId));
+        var stockCheckSpan = await WaitForOrderSpanAsync(OrderTelemetry.StockCheckSpanName, orderId);
 
         Assert.That(stockCheckSpan, Is.Not.Null);
         Assert.That(stockCheckSpan!.GetTagItem("order.outcome"), Is.EqualTo(OrderTelemetry.OutcomeRejected));
         Assert.That(stockCheckSpan.GetTagItem("order.rejection_reason"), Is.EqualTo(OrderTelemetry.RejectionReasonInsufficientStock));
     }
-
-    private async Task<Guid> PlaceOrderAndWaitAsync(Guid variantId, int quantity, OrderStatus expectedStatus)
-    {
-        var response = await Client.PostAsJsonAsync("/api/orders", new CreateOrderRequest { VariantId = variantId, Quantity = quantity });
-        var accepted = await response.Content.ReadFromJsonAsync<OrderAcceptedResponse>();
-
-        var resolved = await PollUntilResolvedAsync(accepted!.OrderId, TimeSpan.FromSeconds(30));
-        Assert.That(resolved.Status, Is.EqualTo(expectedStatus));
-
-        return accepted.OrderId;
-    }
-
-    private static bool IsSpanFor(Activity span, string name, Guid orderId) =>
-        span.DisplayName == name && span.GetTagItem("order.id") as string == orderId.ToString();
 }

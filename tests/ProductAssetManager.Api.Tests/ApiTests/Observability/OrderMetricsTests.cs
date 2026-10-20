@@ -1,9 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using Microsoft.Extensions.DependencyInjection;
-using ProductAssetManager.Api.DTOs;
 using ProductAssetManager.Api.Models;
 using ProductAssetManager.Api.Observability;
 using ProductAssetManager.Api.Tests.ApiTests;
@@ -39,11 +36,10 @@ public class OrderMetricsTests : ApiTestBase
         listener.Start();
 
         var variantId = await SeedVariantAsync("ORDER-METRICS-SKU", 1);
-        Client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await CreateUserTokenAsync());
-        await ResumeConsumerAsync();
+        await SignInAsShopperAndStartConsumerAsync();
 
-        await PlaceOrderAndWaitAsync(variantId, OrderStatus.Confirmed);
-        await PlaceOrderAndWaitAsync(variantId, OrderStatus.Rejected);
+        await PlaceOrderAndWaitForStatusAsync(variantId, 1, OrderStatus.Confirmed);
+        await PlaceOrderAndWaitForStatusAsync(variantId, 1, OrderStatus.Rejected);
 
         await WaitUntilAsync(() => measurements.Count >= 2);
 
@@ -57,15 +53,6 @@ public class OrderMetricsTests : ApiTestBase
         Assert.That(confirmed[0].ContainsKey("rejection_reason"), Is.False);
         Assert.That(rejected, Has.Count.EqualTo(1));
         Assert.That(rejected[0]["rejection_reason"], Is.EqualTo(OrderTelemetry.RejectionReasonInsufficientStock));
-    }
-
-    private async Task PlaceOrderAndWaitAsync(Guid variantId, OrderStatus expectedStatus)
-    {
-        var response = await Client.PostAsJsonAsync("/api/orders", new CreateOrderRequest { VariantId = variantId, Quantity = 1 });
-        var accepted = await response.Content.ReadFromJsonAsync<OrderAcceptedResponse>();
-
-        var resolved = await PollUntilResolvedAsync(accepted!.OrderId, TimeSpan.FromSeconds(30));
-        Assert.That(resolved.Status, Is.EqualTo(expectedStatus));
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)
