@@ -1,5 +1,20 @@
 name: product-asset-manager
 
+x-servicebus-connection: &servicebus-connection "Endpoint=sb://servicebus;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;"
+
+x-sqlserver: &sqlserver
+  image: mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04
+  restart: unless-stopped
+  environment:
+    ACCEPT_EULA: "Y"
+    MSSQL_SA_PASSWORD: ${SQL_SA_PASSWORD:?Set SQL_SA_PASSWORD in .env}
+  healthcheck:
+    test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q \"SELECT 1\" -b -o /dev/null"]
+    interval: 10s
+    timeout: 5s
+    retries: 10
+    start_period: 20s
+
 x-app: &app
   image: product-asset-manager:local
   pull_policy: never
@@ -7,9 +22,9 @@ x-app: &app
   environment: &app-environment
     ASPNETCORE_ENVIRONMENT: Production
     ConnectionStrings__DefaultConnection: "Server=sqlserver,1433;Database=ProductAssetManagerDb;User Id=sa;Password=${SQL_SA_PASSWORD:?Set SQL_SA_PASSWORD in .env};TrustServerCertificate=True;MultipleActiveResultSets=true"
-    ServiceBus__ConnectionString: "Endpoint=sb://servicebus;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;"
+    ServiceBus__ConnectionString: *servicebus-connection
     ServiceBus__QueueName: orders
-    ServiceBus__StockEventsConnectionString: "Endpoint=sb://servicebus;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;"
+    ServiceBus__StockEventsConnectionString: *servicebus-connection
     ServiceBus__StockEventsQueueName: stock-events
     Jwt__SigningKey: ${JWT_SIGNING_KEY:?Set JWT_SIGNING_KEY in .env}
     SeedAdmin__Email: ${SEED_ADMIN_EMAIL:?Set SEED_ADMIN_EMAIL in .env}
@@ -24,34 +39,14 @@ x-app-dependencies: &app-dependencies
 
 services:
   sqlserver:
-    image: mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04
-    restart: unless-stopped
-    environment:
-      ACCEPT_EULA: "Y"
-      MSSQL_SA_PASSWORD: ${SQL_SA_PASSWORD:?Set SQL_SA_PASSWORD in .env}
+    <<: *sqlserver
     ports:
       - "${SQL_PORT:-14333}:1433"
     volumes:
       - sqlserver-data:/var/opt/mssql
-    healthcheck:
-      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q \"SELECT 1\" -b -o /dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
 
   servicebus-sql:
-    image: mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04
-    restart: unless-stopped
-    environment:
-      ACCEPT_EULA: "Y"
-      MSSQL_SA_PASSWORD: ${SQL_SA_PASSWORD:?Set SQL_SA_PASSWORD in .env}
-    healthcheck:
-      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q \"SELECT 1\" -b -o /dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
+    <<: *sqlserver
 
   servicebus:
     image: mcr.microsoft.com/azure-messaging/servicebus-emulator:2.0.1
