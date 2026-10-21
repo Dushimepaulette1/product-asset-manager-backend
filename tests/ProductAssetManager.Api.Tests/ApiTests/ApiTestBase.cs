@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -6,6 +8,7 @@ using ProductAssetManager.Api.Data;
 using ProductAssetManager.Api.DTOs;
 using ProductAssetManager.Api.Messaging;
 using ProductAssetManager.Api.Models;
+using ProductAssetManager.Api.Observability;
 using ProductAssetManager.Api.Services;
 
 namespace ProductAssetManager.Api.Tests.ApiTests;
@@ -105,6 +108,76 @@ public abstract class ApiTestBase
             .Select(o => o.Status)
             .FirstAsync();
     }
+
+    protected async Task<Guid> SeedVariantAsync(string sku, int quantity)
+    {
+        using var scope = Factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        var category = new Category { Id = Guid.NewGuid(), Name = $"Category for {sku}" };
+        var variant = new Variant { Id = Guid.NewGuid(), Name = "Standard", SKU = sku, Quantity = quantity };
+
+        dbContext.Categories.Add(category);
+        dbContext.Products.Add(new Product
+        {
+            Id = Guid.NewGuid(),
+            Name = $"Product for {sku}",
+            Description = "Seeded directly for a test",
+            BasePrice = 10.00m,
+            Material = "Test",
+            CategoryId = category.Id,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+            Variants = { variant }
+        });
+
+        await dbContext.SaveChangesAsync();
+
+        return variant.Id;
+    }
+
+    protected async Task<Activity?> WaitForSpanAsync(Func<Activity, bool> predicate, TimeSpan? timeout = null)
+    {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(10));
+
+        while (DateTime.UtcNow < deadline)
+        {
+            var match = Factory.ExportedActivities.Snapshot().FirstOrDefault(predicate);
+
+            if (match is not null)
+            {
+                return match;
+            }
+
+            await Task.Delay(200);
+        }
+
+        return null;
+    }
+
+    protected async Task SignInAsShopperAndStartConsumerAsync()
+    {
+        Client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await CreateUserTokenAsync());
+        await ResumeConsumerAsync();
+    }
+
+    protected async Task<Guid> PlaceOrderAndWaitForStatusAsync(Guid variantId, int quantity, OrderStatus expectedStatus)
+    {
+        var response = await Client.PostAsJsonAsync("/api/orders", new CreateOrderRequest { VariantId = variantId, Quantity = quantity });
+        var accepted = await response.Content.ReadFromJsonAsync<OrderAcceptedResponse>();
+
+        var resolved = await PollUntilResolvedAsync(accepted!.OrderId, TimeSpan.FromSeconds(30));
+        Assert.That(resolved.Status, Is.EqualTo(expectedStatus));
+
+        return accepted.OrderId;
+    }
+
+    protected Task<Activity?> WaitForOrderSpanAsync(string spanName, Guid orderId) =>
+        WaitForSpanAsync(span => span.DisplayName == spanName && span.GetTagItem("order.id") as string == orderId.ToString());
+
+    protected Activity PurchaseRequestSpan() =>
+        Factory.ExportedActivities.Snapshot().Single(span =>
+            span.Kind == ActivityKind.Server && span.DisplayName == "POST api/orders");
 
     protected Task ResumeConsumerAsync()
     {

@@ -1,0 +1,96 @@
+using OpenTelemetry;
+using OpenTelemetry.Logs;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+
+namespace ProductAssetManager.Api.Observability;
+
+public static class ObservabilityExtensions
+{
+    private const string DefaultServiceName = "product-asset-manager";
+
+    public static WebApplicationBuilder AddApplicationObservability(this WebApplicationBuilder builder)
+    {
+        var configuration = builder.Configuration;
+
+        var serviceName = configuration["OTEL_SERVICE_NAME"] ?? DefaultServiceName;
+        var serviceVersion = configuration["Build:CommitSha"] ?? "unknown";
+        var deploymentEnvironment = configuration["OpenTelemetry:DeploymentEnvironment"]
+            ?? builder.Environment.EnvironmentName.ToLowerInvariant();
+
+        builder.Services.AddSingleton<OrderMetrics>();
+        builder.Services.AddSingleton<PendingOrdersMetrics>();
+
+        var openTelemetry = builder.Services.AddOpenTelemetry()
+            .ConfigureResource(resource => resource
+                .AddService(serviceName, serviceVersion: serviceVersion)
+                .AddAttributes([new KeyValuePair<string, object>("deployment.environment", deploymentEnvironment)]))
+            .WithTracing(tracing => tracing
+                .SetSampler(services => CreateSampler(services.GetRequiredService<IConfiguration>()))
+                .AddSource(OrderTelemetry.SourceName)
+                .AddAspNetCoreInstrumentation(options => options.Filter = context => !IsHealthCheck(context.Request.Path))
+                .AddHttpClientInstrumentation()
+                .AddEntityFrameworkCoreInstrumentation())
+            .WithMetrics(metrics => metrics
+                .AddMeter(OrderMetrics.MeterName)
+                .AddAspNetCoreInstrumentation()
+                .AddHttpClientInstrumentation()
+                .AddRuntimeInstrumentation())
+            .WithLogging(
+                _ => { },
+                options =>
+                {
+                    options.IncludeFormattedMessage = true;
+                    options.IncludeScopes = true;
+                });
+
+        if (!string.IsNullOrWhiteSpace(configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]))
+        {
+            openTelemetry.UseOtlpExporter();
+        }
+
+        return builder;
+    }
+
+    public static WebApplication UseApplicationObservability(this WebApplication app)
+    {
+        app.Services.GetService<MeterProvider>();
+        app.Services.GetRequiredService<OrderMetrics>();
+
+        if (app.Configuration.GetValue("Api:Enabled", true))
+        {
+            app.Services.GetRequiredService<PendingOrdersMetrics>();
+        }
+
+        app.Use(async (context, next) =>
+        {
+            if (!IsHealthCheck(context.Request.Path))
+            {
+                await next(context);
+                return;
+            }
+
+            using (SuppressInstrumentationScope.Begin())
+            {
+                await next(context);
+            }
+        });
+
+        return app;
+    }
+
+    private static Sampler CreateSampler(IConfiguration configuration)
+    {
+        var samplingRatio = configuration.GetValue("OpenTelemetry:TraceSamplingRatio", 1.0);
+
+        if (samplingRatio is < 0 or > 1)
+        {
+            throw new InvalidOperationException("OpenTelemetry:TraceSamplingRatio must be between 0 and 1.");
+        }
+
+        return new ParentBasedSampler(new TraceIdRatioBasedSampler(samplingRatio));
+    }
+
+    private static bool IsHealthCheck(PathString path) => path.StartsWithSegments("/health");
+}
