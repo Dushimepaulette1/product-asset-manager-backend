@@ -452,6 +452,17 @@ docker stop version-check
 smoke test** have passed (*Settings → Branches → Branch protection rule for `main` → Require status checks
 to pass before merging*).
 
+### Pipeline gate
+
+Checked with [PR #14](https://github.com/Dushimepaulette1/product-asset-manager-backend/pull/14), which
+targets `main` and was never merged:
+
+1. It added a deliberately failing test (`PipelineGateTests`).
+   **Build and test** failed, 60 passed and 1 failed, and the merge was blocked:
+   [failing run](https://github.com/Dushimepaulette1/product-asset-manager-backend/actions/runs/39573308394).
+2. The failing test was removed in the same PR. Both checks passed:
+   [passing run](https://github.com/Dushimepaulette1/product-asset-manager-backend/actions/runs/39574083834).
+
 ## Getting Started (without Docker, against Azure)
 
 This is the path for working on the code with `dotnet run`, using LocalDB and a real Azure Service Bus
