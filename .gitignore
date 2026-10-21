@@ -3,6 +3,9 @@
 ##
 ## Get latest from `dotnet new gitignore`
 
+# Personal notes, never committed
+myNotes.md
+
 # dotenv files
 .env
 
@@ -480,3 +483,6 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# NuGet packages cached inside the workspace by CI
+.nuget/

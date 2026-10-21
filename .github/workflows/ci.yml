@@ -1,0 +1,197 @@
+name: CI/CD
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Create throwaway settings for this run
+        run: scripts/ci-create-env.sh
+
+      - name: Start SQL Server and the Service Bus emulator
+        run: docker compose up --detach sqlserver servicebus
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'dotnet-tools.json') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Restore tools and packages
+        run: |
+          dotnet tool restore
+          dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Check every model change has a migration
+        env:
+          Jwt__SigningKey: design-time-placeholder-the-app-needs-one-to-start
+        run: dotnet dotnet-ef migrations has-pending-model-changes --project src --configuration Release --no-build
+
+      - name: Wait for SQL Server and the Service Bus emulator
+        run: |
+          docker compose up --detach --wait sqlserver servicebus
+          docker compose run --rm servicebus-ready
+
+      - name: Run all tests
+        run: >
+          dotnet test --configuration Release --no-build
+          --logger "trx;LogFileName=test-results.trx"
+          --logger GitHubActions
+          --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results
+          path: TestResults
+          if-no-files-found: warn
+
+      - name: Show container logs
+        if: failure()
+        run: docker compose logs --tail 200
+
+  docker:
+    name: Docker build and smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      image-id: ${{ steps.build.outputs.image-id }}
+      tags: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Decide whether this run publishes the image
+        id: plan
+        run: echo "publish=${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}" >> "$GITHUB_OUTPUT"
+
+      - name: Work out the image tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha,format=short,prefix=
+            type=semver,pattern={{version}}
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build the Docker image once
+        id: build
+        env:
+          LABELS: ${{ steps.meta.outputs.labels }}
+        run: |
+          label_options=()
+          while IFS= read -r label; do
+            [ -n "$label" ] && label_options+=(--label "$label")
+          done <<< "$LABELS"
+
+          docker build \
+            --build-arg APP_VERSION="${{ github.ref_name }}" \
+            --build-arg GIT_SHA="${{ github.sha }}" \
+            "${label_options[@]}" \
+            --tag product-asset-manager:local \
+            .
+
+          echo "image-id=$(docker image inspect --format '{{.Id}}' product-asset-manager:local)" >> "$GITHUB_OUTPUT"
+
+      - name: Create throwaway settings for this run
+        run: scripts/ci-create-env.sh
+
+      - name: Run the container smoke test against that image
+        env:
+          SMOKE_TEST_SKIP_BUILD: "true"
+        run: scripts/smoke-test.sh
+
+      - name: Save the tested image for the publish job
+        if: steps.plan.outputs.publish == 'true'
+        run: docker save product-asset-manager:local | gzip > tested-image.tar.gz
+
+      - name: Hand the tested image to the publish job
+        if: steps.plan.outputs.publish == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tested-image
+          path: tested-image.tar.gz
+          retention-days: 1
+
+  publish:
+    name: Publish image to GHCR
+    needs: [build-and-test, docker]
+    if: needs.docker.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download the tested image
+        uses: actions/download-artifact@v8
+        with:
+          name: tested-image
+
+      - name: Load it and check it is the image that passed the smoke test
+        env:
+          TESTED_IMAGE_ID: ${{ needs.docker.outputs.image-id }}
+        run: |
+          gunzip -c tested-image.tar.gz | docker load
+          loaded_image_id=$(docker image inspect --format '{{.Id}}' product-asset-manager:local)
+          echo "Tested image: $TESTED_IMAGE_ID"
+          echo "Loaded image: $loaded_image_id"
+          if [ "$loaded_image_id" != "$TESTED_IMAGE_ID" ]; then
+            echo "::error::The image to publish is not the one that passed the smoke test."
+            exit 1
+          fi
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push the tested image
+        env:
+          TAGS: ${{ needs.docker.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            docker tag product-asset-manager:local "$tag"
+            docker push "$tag"
+          done <<< "$TAGS"

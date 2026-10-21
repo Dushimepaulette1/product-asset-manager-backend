@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Serialization;
 using Azure.Messaging.ServiceBus;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -7,17 +8,31 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using ProductAssetManager.Api.Data;
+using ProductAssetManager.Api.DTOs;
+using ProductAssetManager.Api.Health;
 using ProductAssetManager.Api.Messaging;
 using ProductAssetManager.Api.Middleware;
+using ProductAssetManager.Api.Observability;
 using ProductAssetManager.Api.Models;
 using ProductAssetManager.Api.Services;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var apiEnabled = builder.Configuration.GetValue("Api:Enabled", true);
+var consumerEnabled = builder.Configuration.GetValue("Consumer:Enabled", true);
+
+if (!apiEnabled && !consumerEnabled)
+{
+    throw new InvalidOperationException("Api:Enabled and Consumer:Enabled are both false, so this process would have nothing to do.");
+}
+
+builder.AddApplicationObservability();
+
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options => options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -79,6 +94,21 @@ builder.Services.AddKeyedSingleton<ServiceBusSender>(ServiceBusQueues.Orders, (s
 builder.Services.AddKeyedSingleton<ServiceBusSender>(ServiceBusQueues.StockEvents, (sp, _) =>
     sp.GetRequiredKeyedService<ServiceBusClient>(ServiceBusQueues.StockEvents).CreateSender(stockEventsQueueName));
 
+if (consumerEnabled)
+{
+    builder.Services.AddSingleton(sp => new OrderConsumer(
+        sp.GetRequiredService<IServiceScopeFactory>(),
+        sp.GetRequiredKeyedService<ServiceBusClient>(ServiceBusQueues.Orders),
+        sp.GetRequiredKeyedService<ServiceBusSender>(ServiceBusQueues.StockEvents),
+        sp.GetRequiredService<IConfiguration>(),
+        sp.GetRequiredService<OrderMetrics>(),
+        sp.GetRequiredService<ILogger<OrderConsumer>>()));
+
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<OrderConsumer>());
+}
+
+builder.Services.AddApplicationHealthChecks(builder.Configuration, consumerEnabled);
+
 var jwtSigningKey = builder.Configuration["Jwt:SigningKey"]
     ?? throw new InvalidOperationException("Jwt:SigningKey is not configured.");
 
@@ -104,10 +134,20 @@ builder.Services.AddAuthentication(options =>
 
 var app = builder.Build();
 
+app.UseApplicationObservability();
+
 app.UseExceptionHandler();
 
-using (var scope = app.Services.CreateScope())
+if (args.Contains("--migrate"))
 {
+    await DatabaseInitializer.MigrateAndSeedAsync(app.Services, app.Configuration, app.Logger);
+    return;
+}
+
+if (app.Configuration.GetValue("Database:InitializeOnStartup", true))
+{
+    using var scope = app.Services.CreateScope();
+
     if (app.Environment.IsDevelopment())
     {
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -117,7 +157,9 @@ using (var scope = app.Services.CreateScope())
     await IdentitySeeder.SeedAsync(scope.ServiceProvider, app.Configuration);
 }
 
-if (app.Environment.IsDevelopment())
+var swaggerEnabled = app.Configuration.GetValue("Swagger:Enabled", app.Environment.IsDevelopment());
+
+if (apiEnabled && swaggerEnabled)
 {
     app.UseSwagger();
     app.UseSwaggerUI();
@@ -126,7 +168,16 @@ if (app.Environment.IsDevelopment())
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapControllers();
+if (apiEnabled)
+{
+    app.MapControllers();
+}
+
+app.MapApplicationHealthChecks();
+
+app.MapGet("/version", (IConfiguration configuration) => new VersionResponse(
+    configuration["Build:Version"] ?? "dev",
+    configuration["Build:CommitSha"] ?? "unknown"));
 
 app.Run();
 
