@@ -13,17 +13,20 @@ cd "$(dirname "$0")/.."
 sql_password="Ci_$(openssl rand -hex 16)_Aa1!"
 admin_password="Ci_$(openssl rand -hex 12)_Aa1!"
 jwt_signing_key="$(openssl rand -hex 32)"
+grafana_password="Ci_$(openssl rand -hex 12)_Aa1!"
 
 if [ -n "${GITHUB_ACTIONS:-}" ]; then
   echo "::add-mask::$sql_password"
   echo "::add-mask::$admin_password"
   echo "::add-mask::$jwt_signing_key"
+  echo "::add-mask::$grafana_password"
 fi
 
 sed \
   -e "s/^SQL_SA_PASSWORD=.*/SQL_SA_PASSWORD=$sql_password/" \
   -e "s/^SEED_ADMIN_PASSWORD=.*/SEED_ADMIN_PASSWORD=$admin_password/" \
   -e "s/^JWT_SIGNING_KEY=.*/JWT_SIGNING_KEY=$jwt_signing_key/" \
+  -e "s/^GRAFANA_ADMIN_PASSWORD=.*/GRAFANA_ADMIN_PASSWORD=$grafana_password/" \
   .env.example > .env
 
 source scripts/lib/settings.sh

@@ -1,0 +1,49 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: orders
+    folder: Product Asset Manager
+    interval: 10s
+    rules:
+      - uid: orders-stuck-pending
+        title: Orders stuck in Pending
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: max(orders_pending_oldest_age_seconds)
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [120]
+        for: 30s
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: An order has been Pending for more than 2 minutes.
+          description: >-
+            The oldest Pending order has waited {{ printf "%.0f" $values.B.Value }} seconds. Orders normally
+            resolve within seconds, so the order consumer is probably stopped, failing, or behind. Check
+            docker compose ps, the consumer's logs in Loki, and the queue.

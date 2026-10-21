@@ -12,6 +12,7 @@ using ProductAssetManager.Api.DTOs;
 using ProductAssetManager.Api.Health;
 using ProductAssetManager.Api.Messaging;
 using ProductAssetManager.Api.Middleware;
+using ProductAssetManager.Api.Observability;
 using ProductAssetManager.Api.Models;
 using ProductAssetManager.Api.Services;
 using Swashbuckle.AspNetCore.SwaggerGen;
@@ -25,6 +26,8 @@ if (!apiEnabled && !consumerEnabled)
 {
     throw new InvalidOperationException("Api:Enabled and Consumer:Enabled are both false, so this process would have nothing to do.");
 }
+
+builder.AddApplicationObservability();
 
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
@@ -98,6 +101,7 @@ if (consumerEnabled)
         sp.GetRequiredKeyedService<ServiceBusClient>(ServiceBusQueues.Orders),
         sp.GetRequiredKeyedService<ServiceBusSender>(ServiceBusQueues.StockEvents),
         sp.GetRequiredService<IConfiguration>(),
+        sp.GetRequiredService<OrderMetrics>(),
         sp.GetRequiredService<ILogger<OrderConsumer>>()));
 
     builder.Services.AddHostedService(sp => sp.GetRequiredService<OrderConsumer>());
@@ -129,6 +133,8 @@ builder.Services.AddAuthentication(options =>
     });
 
 var app = builder.Build();
+
+app.UseApplicationObservability();
 
 app.UseExceptionHandler();
 

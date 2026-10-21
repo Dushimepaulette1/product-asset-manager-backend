@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Azure.Messaging.ServiceBus;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using ProductAssetManager.Api.Data;
 using ProductAssetManager.Api.Models;
+using ProductAssetManager.Api.Observability;
 
 namespace ProductAssetManager.Api.Messaging;
 
@@ -14,6 +16,7 @@ public class OrderConsumer : BackgroundService
     private readonly ServiceBusSender _stockEventsSender;
     private readonly string _ordersQueueName;
     private readonly bool _autoStart;
+    private readonly OrderMetrics _orderMetrics;
     private readonly ILogger<OrderConsumer> _logger;
     private ServiceBusSessionProcessor? _processor;
 
@@ -22,6 +25,7 @@ public class OrderConsumer : BackgroundService
         ServiceBusClient ordersClient,
         ServiceBusSender stockEventsSender,
         IConfiguration configuration,
+        OrderMetrics orderMetrics,
         ILogger<OrderConsumer> logger)
     {
         _scopeFactory = scopeFactory;
@@ -30,6 +34,7 @@ public class OrderConsumer : BackgroundService
         _ordersQueueName = configuration["ServiceBus:QueueName"]
             ?? throw new InvalidOperationException("ServiceBus:QueueName is not configured.");
         _autoStart = configuration.GetValue("ServiceBus:AutoStartConsumer", true);
+        _orderMetrics = orderMetrics;
         _logger = logger;
     }
 
@@ -89,6 +94,16 @@ public class OrderConsumer : BackgroundService
 
     private async Task ProcessMessageAsync(ProcessSessionMessageEventArgs args)
     {
+        var parentContext = MessageTraceContext.Extract(args.Message);
+
+        using var processActivity = OrderTelemetry.ActivitySource.StartActivity(
+            OrderTelemetry.ProcessSpanName,
+            ActivityKind.Consumer,
+            parentContext.ActivityContext);
+        processActivity?.SetTag("messaging.system", "servicebus");
+        processActivity?.SetTag("messaging.destination.name", _ordersQueueName);
+        processActivity?.SetTag("messaging.message.id", args.Message.MessageId);
+
         using var scope = _scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
@@ -107,6 +122,8 @@ public class OrderConsumer : BackgroundService
                 args.CancellationToken);
             return;
         }
+
+        processActivity?.SetTag("order.id", orderPlaced.OrderId.ToString());
 
         var order = await dbContext.Orders
             .Include(o => o.Variant)
@@ -136,37 +153,59 @@ public class OrderConsumer : BackgroundService
 
         var variant = order.Variant;
         var confirmed = false;
+        string outcome;
+        string? rejectionReason;
 
-        const int maxAttempts = 3;
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        using (var stockCheckActivity = OrderTelemetry.ActivitySource.StartActivity(OrderTelemetry.StockCheckSpanName))
         {
-            if (variant.Quantity >= order.QuantityPurchased)
-            {
-                variant.Quantity -= order.QuantityPurchased;
-                order.Status = OrderStatus.Confirmed;
-                order.RejectionReason = null;
-                confirmed = true;
-            }
-            else
-            {
-                order.Status = OrderStatus.Rejected;
-                order.RejectionReason = $"Only {variant.Quantity} unit(s) of '{variant.Name}' were available.";
-                confirmed = false;
-            }
+            stockCheckActivity?.SetTag("order.id", order.Id.ToString());
+            stockCheckActivity?.SetTag("variant.sku", variant.SKU);
+            stockCheckActivity?.SetTag("order.quantity", order.QuantityPurchased);
 
-            try
+            var saveAttempts = 0;
+
+            const int maxAttempts = 3;
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                await dbContext.SaveChangesAsync(args.CancellationToken);
-                break;
-            }
-            catch (DbUpdateConcurrencyException ex) when (attempt < maxAttempts)
-            {
-                foreach (var entry in ex.Entries)
+                saveAttempts = attempt;
+
+                if (variant.Quantity >= order.QuantityPurchased)
                 {
-                    await entry.ReloadAsync(args.CancellationToken);
+                    variant.Quantity -= order.QuantityPurchased;
+                    order.Status = OrderStatus.Confirmed;
+                    order.RejectionReason = null;
+                    confirmed = true;
+                }
+                else
+                {
+                    order.Status = OrderStatus.Rejected;
+                    order.RejectionReason = $"Only {variant.Quantity} unit(s) of '{variant.Name}' were available.";
+                    confirmed = false;
+                }
+
+                try
+                {
+                    await dbContext.SaveChangesAsync(args.CancellationToken);
+                    break;
+                }
+                catch (DbUpdateConcurrencyException ex) when (attempt < maxAttempts)
+                {
+                    foreach (var entry in ex.Entries)
+                    {
+                        await entry.ReloadAsync(args.CancellationToken);
+                    }
                 }
             }
+
+            outcome = confirmed ? OrderTelemetry.OutcomeConfirmed : OrderTelemetry.OutcomeRejected;
+            rejectionReason = confirmed ? null : OrderTelemetry.RejectionReasonInsufficientStock;
+
+            stockCheckActivity?.SetTag("order.outcome", outcome);
+            stockCheckActivity?.SetTag("order.rejection_reason", rejectionReason);
+            stockCheckActivity?.SetTag("order.save_attempts", saveAttempts);
         }
+
+        _orderMetrics.OrderProcessed(outcome, rejectionReason, DateTime.UtcNow - order.OrderDate);
 
         if (confirmed)
         {
