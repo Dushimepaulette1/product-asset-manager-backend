@@ -2,7 +2,7 @@ namespace ProductAssetManager.Api.Messaging;
 
 public static class ServiceBusQueues
 {
-    public const string Orders = "orders";
+    public const string Orders = "OrdersBus";
 
-    public const string StockEvents = "stock-events";
+    public const string StockEvents = "StockEventsBus";
 }

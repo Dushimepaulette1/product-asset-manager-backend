@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Azure.Messaging.ServiceBus;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -5,6 +6,7 @@ using ProductAssetManager.Api.Data;
 using ProductAssetManager.Api.DTOs;
 using ProductAssetManager.Api.Messaging;
 using ProductAssetManager.Api.Models;
+using ProductAssetManager.Api.Observability;
 
 namespace ProductAssetManager.Api.Services;
 
@@ -12,13 +14,16 @@ public class OrderService : IOrderService
 {
     private readonly ApplicationDbContext _dbContext;
     private readonly ServiceBusSender _ordersSender;
+    private readonly OrderMetrics _orderMetrics;
 
     public OrderService(
         ApplicationDbContext dbContext,
-        [FromKeyedServices(ServiceBusQueues.Orders)] ServiceBusSender ordersSender)
+        [FromKeyedServices(ServiceBusQueues.Orders)] ServiceBusSender ordersSender,
+        OrderMetrics orderMetrics)
     {
         _dbContext = dbContext;
         _ordersSender = ordersSender;
+        _orderMetrics = orderMetrics;
     }
 
     public async Task<CreateOrderResult> CreateAsync(string userId, CreateOrderRequest request)
@@ -61,6 +66,14 @@ public class OrderService : IOrderService
 
         try
         {
+            using var publishActivity = OrderTelemetry.ActivitySource.StartActivity(OrderTelemetry.PublishSpanName, ActivityKind.Producer);
+            publishActivity?.SetTag("messaging.system", "servicebus");
+            publishActivity?.SetTag("messaging.destination.name", _ordersSender.EntityPath);
+            publishActivity?.SetTag("messaging.message.id", message.MessageId);
+            publishActivity?.SetTag("order.id", order.Id.ToString());
+
+            MessageTraceContext.Inject(publishActivity ?? Activity.Current, message);
+
             await _ordersSender.SendMessageAsync(message);
         }
         catch
@@ -70,6 +83,40 @@ public class OrderService : IOrderService
             throw;
         }
 
+        _orderMetrics.OrderPlaced();
+
         return new CreateOrderResult(true, false, null, order.Id);
+    }
+
+    public async Task<GetOrderResult> GetByIdAsync(Guid orderId, string requestingUserId, bool isAdmin, CancellationToken cancellationToken = default)
+    {
+        var order = await _dbContext.Orders
+            .Include(o => o.Variant)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken);
+
+        if (order is null)
+        {
+            return new GetOrderResult(false, true, false, null);
+        }
+
+        if (!isAdmin && order.UserId != requestingUserId)
+        {
+            return new GetOrderResult(false, false, true, null);
+        }
+
+        var response = new OrderResponse(
+            Id: order.Id,
+            Status: order.Status,
+            RejectionReason: order.RejectionReason,
+            VariantId: order.VariantId,
+            VariantSku: order.Variant.SKU,
+            VariantName: order.Variant.Name,
+            QuantityPurchased: order.QuantityPurchased,
+            UnitPriceAtPurchase: order.UnitPriceAtPurchase,
+            TotalPrice: order.UnitPriceAtPurchase * order.QuantityPurchased,
+            OrderDate: order.OrderDate);
+
+        return new GetOrderResult(true, false, false, response);
     }
 }

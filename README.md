@@ -1,17 +1,22 @@
 # Product Asset Manager — Backend
 
-ASP.NET Core Web API backend for an e-commerce inventory and order management platform (Backend Capstone).
+[![CI/CD](https://github.com/Dushimepaulette1/product-asset-manager-backend/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Dushimepaulette1/product-asset-manager-backend/actions/workflows/ci.yml)
+
+ASP.NET Core Web API backend for an e-commerce inventory and order management platform (Backend Capstone,
+extended with Azure Service Bus).
 
 It covers the full lifecycle an admin-run storefront needs: a category tree, products with SKU-level
-variants and stock, curated product collections, and a purchase flow that turns stock into orders —
-all behind JWT-authenticated, role-gated endpoints.
+variants and stock, curated product collections, and an asynchronous purchase flow that turns stock into
+orders — all behind JWT-authenticated, role-gated endpoints.
 
 ## Overview
 
 Two kinds of accounts use this API:
 
 - An **Admin** manages the catalog — categories, products, variants, stock levels, and collections.
-- A **User** browses the public catalog and purchases variants, which creates an order and reduces stock.
+- A **User** browses the public catalog and buys variants. Buying returns immediately with an order
+  reference; the order is then confirmed or rejected in the background, and the shopper checks the
+  outcome with `GET /api/orders/{id}`.
 
 ## Architecture
 
@@ -38,6 +43,38 @@ Controller  →  Service  →  ApplicationDbContext (EF Core)  →  SQL Server
   role claim that `[Authorize(Roles = "Admin")]` (or a bare `[Authorize]` for "any signed-in account")
   checks on every protected endpoint.
 
+### The purchase flow (Azure Service Bus)
+
+```
+POST /api/orders                                      background: in the API process, or its own container
+  │                                                    ┌──────────────────────────────────┐
+  ├─ validate: quantity ≥ 1, variant exists/active     │ OrderConsumer (BackgroundService)│
+  ├─ save Order as Pending  ───────────────┐           │  one session per SKU, one message│
+  ├─ publish OrderPlaced ──▶ [orders queue]├──────────▶│  at a time, in order:            │
+  └─ 202 Accepted { orderId }              │           │  • load Order + Variant          │
+                                           │           │  • skip if not Pending           │
+GET /api/orders/{id}  ◀── reads the row ───┘           │  • enough stock? decrement and   │
+   Pending → Confirmed | Rejected (+ reason)           │    Confirm, else Reject + reason │
+                                                       │  • one SaveChanges               │
+                                                       │  • publish StockDecremented ─────┼──▶ [stock-events queue]
+                                                       │  • complete the message          │
+                                                       └──────────────────────────────────┘
+```
+
+- **Producer** — `OrderService.CreateAsync`. It checks only that the quantity is at least 1 and the
+  variant exists and is active. It deliberately does **not** check stock: that decision belongs to the
+  consumer, which is the only place that can make it safely.
+- **Consumer** — `OrderConsumer`, a hosted service. With `dotnet run` it starts inside the API process;
+  under Docker Compose it runs in its own `consumer` container (see `Api__Enabled` / `Consumer__Enabled`
+  below). It uses a session-aware processor in peek-lock mode with auto-complete off.
+- **Messages** — `OrderPlaced` (`MessageId` = order id, `SessionId` = the variant's SKU, body
+  `{ "OrderId": "..." }`) and `StockDecremented` (published to a second queue after a confirmed order).
+
+| Endpoint | Auth | Result |
+|---|---|---|
+| `POST /api/orders` `{ variantId, quantity }` | any signed-in account | `202` with `{ orderId }`; `400` bad quantity; `404` unknown variant |
+| `GET /api/orders/{id}` | the order's owner, or an Admin | `200` with status (`Pending`/`Confirmed`/`Rejected`) and the rejection reason if any; `403` someone else's order; `404` unknown id |
+
 ## Entities & Relationships
 
 | Entity | Relationships | Notes |
@@ -45,18 +82,399 @@ Controller  →  Service  →  ApplicationDbContext (EF Core)  →  SQL Server
 | `ApplicationUser` | has many `Order` | extends ASP.NET Core Identity's user; carries `Admin`/`User` role |
 | `Category` | self-referencing (`ParentCategory` / `ChildCategories`); has many `Product` | only a *terminal* category (no children) may hold products |
 | `Product` | belongs to one `Category`; has many `Variant`; many-to-many with `Collection` | |
-| `Variant` | belongs to one `Product`; has many `Order` | unique `SKU`; `Quantity` is the stock count |
-| `Order` | belongs to one `ApplicationUser`; references one `Variant` | a purchase record — snapshots `UnitPriceAtPurchase` so later price changes never rewrite history |
+| `Variant` | belongs to one `Product`; has many `Order` | unique `SKU`; `Quantity` is the stock count; `RowVersion` is a concurrency token |
+| `Order` | belongs to one `ApplicationUser`; references one `Variant` | a purchase record — snapshots `UnitPriceAtPurchase` when the order is placed; `Status` is `Pending`, `Confirmed` or `Rejected`, with a `RejectionReason` when rejected |
 | `Collection` | many-to-many with `Product` via `ProductCollection` | a curated grouping (e.g. "Summer Sale") |
 | `ProductCollection` | join entity, composite key `(ProductId, CollectionId)` | pure many-to-many join, no meaning of its own |
 
-## Getting Started
+## Running the whole system with Docker
+
+This is the quickest way to see everything working. It needs **no Azure account and no .NET SDK**:
+Docker runs the API, the order consumer, SQL Server and a local Service Bus emulator for you.
+
+### Prerequisites
+
+- **Docker Desktop** (Windows/macOS) or **Docker Engine 24+** (Linux) with **Docker Compose v2.20+**.
+  Tested with Docker 29.1.3 and Compose v2.40.3. Check yours with `docker version` and `docker compose version`.
+- About **8 GB of memory** available to Docker. The two SQL Servers are the heavy part; each is capped at
+  1.5 GB (`MSSQL_MEMORY_LIMIT_MB`) because by default SQL Server takes up to 80% of the memory it can see.
+- Free ports `8080`, `14333`, `5672`, `5300`, `4317`, `4318`, `3200`, `3100`, `9090` and `3000`, or change
+  them in `.env`.
+
+### Start and stop
+
+```
+git clone https://github.com/Dushimepaulette1/product-asset-manager-backend.git
+cd product-asset-manager-backend
+cp .env.example .env
+docker compose up --build
+```
+
+`cp .env.example .env` creates your private settings file (it is gitignored). The placeholder values work
+as they are for a local run; change the passwords if you like. The first start takes a few minutes while
+images download and SQL Server initialises. The stack is ready when `api` and `consumer` show as
+`(healthy)` in `docker compose ps`.
+
+| Command | What it does |
+|---|---|
+| `docker compose up --build` | build the app image and start everything (add `-d` to run in the background) |
+| `docker compose ps -a` | list services and their health |
+| `docker compose logs -f consumer` | follow one service's logs |
+| `docker compose stop consumer` / `docker compose start consumer` | stop or restart only the consumer |
+| `docker compose down` | stop and remove the containers, **keeping** the database volume |
+| `docker compose down --volumes` | the same, and also delete all data for a completely fresh start |
+
+### Services
+
+| Service | What it is | URL / port on your machine |
+|---|---|---|
+| `api` | the Web API (`Consumer__Enabled=false`) | `http://localhost:8080` |
+| — Swagger UI | interactive API docs | `http://localhost:8080/swagger` |
+| — health | liveness / readiness | `http://localhost:8080/health/live`, `http://localhost:8080/health/ready` |
+| `consumer` | the order consumer (`Api__Enabled=false`); same image as `api` | not published (internal only) |
+| `migrator` | one-off job: applies migrations and seeds data, then exits | — |
+| `sqlserver` | the application database, data kept in the `sqlserver-data` volume | `localhost,14333` (user `sa`, password from `.env`) |
+| `servicebus` | Azure Service Bus emulator with the `orders` (sessions) and `stock-events` queues | AMQP `localhost:5672`, management `http://localhost:5300` |
+| `servicebus-sql` | the emulator's own SQL Server (the emulator needs one) | not published |
+| `servicebus-ready` | one-off job that waits until the emulator reports healthy, then exits | — |
+| `grafana` | dashboards, traces and logs in one place | `http://localhost:3000` (login: `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` from `.env`) |
+| `otel-collector` | OpenTelemetry Collector: receives all telemetry and forwards it | OTLP gRPC `localhost:4317`, OTLP HTTP `localhost:4318` |
+| `tempo` | trace storage | `http://localhost:3200` |
+| `loki` | log storage | `http://localhost:3100` |
+| `prometheus` | metric storage, data kept in the `prometheus-data` volume | `http://localhost:9090` |
+
+All ports come from `.env` (`API_PORT`, `SQL_PORT`, `SERVICEBUS_PORT`, `SERVICEBUS_MANAGEMENT_PORT`,
+`OTLP_GRPC_PORT`, `OTLP_HTTP_PORT`, `TEMPO_PORT`, `LOKI_PORT`, `PROMETHEUS_PORT`, `GRAFANA_PORT`).
+
+### Start-up order
+
+Compose starts things in this order, using health checks, so nothing starts before what it needs:
+
+```
+sqlserver (healthy) ──▶ migrator (exits 0) ─────────┐
+                                                    ├──▶ api, consumer
+servicebus-sql (healthy) ──▶ servicebus ──▶ servicebus-ready (exits 0)
+```
+
+- `sqlserver` and `servicebus-sql` are healthy once `sqlcmd` can run `SELECT 1`.
+- The emulator image contains no shell, so it cannot health-check itself. `servicebus-ready` (a tiny curl
+  container) polls the emulator's `http://servicebus:5300/health` instead and exits once it says `healthy`.
+- `api` and `consumer` report healthy once `GET /health/ready` returns `200`.
+- `/health/live` only says the process is running. `/health/ready` checks the database and the Service Bus
+  queue(s) the process uses, and returns `503` if any of them is unreachable. Each check gives up after
+  `HealthChecks:TimeoutSeconds` seconds (default `5`; set `HealthChecks__TimeoutSeconds` to change it).
+
+### Try it
+
+With the stack running, in a bash shell (Git Bash or WSL on Windows):
+
+```bash
+BASE=http://localhost:8080
+
+# 1. the demo product seeded by the migrator
+curl $BASE/api/products/22222222-2222-2222-2222-222222222222
+
+# 2. register a shopper and log in
+curl -X POST $BASE/api/auth/register -H "Content-Type: application/json" \
+  -d '{"name":"Shopper","email":"shopper@example.com","password":"Shopper_123!"}'
+TOKEN=$(curl -s -X POST $BASE/api/auth/login -H "Content-Type: application/json" \
+  -d '{"email":"shopper@example.com","password":"Shopper_123!"}' | sed -E 's/.*"token":"([^"]+)".*/\1/')
+
+# 3. buy one demo chair -> 202 Accepted with an orderId
+curl -X POST $BASE/api/orders -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"variantId":"33333333-3333-3333-3333-333333333333","quantity":1}'
+
+# 4. check the order (use the orderId from step 3): Pending, then Confirmed a few seconds later
+curl $BASE/api/orders/<orderId> -H "Authorization: Bearer $TOKEN"
+```
+
+Or do the same in Swagger at `http://localhost:8080/swagger`. The seeded Admin logs in with
+`SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` from your `.env`.
+
+**Consumer recovery.** Run `docker compose stop consumer`, buy a few more chairs (each still returns
+`202` and stays `Pending`, waiting in the queue), then `docker compose start consumer`. Within a few
+seconds every order becomes `Confirmed`, and `docker compose logs consumer` shows one line per order with
+the remaining stock. Stop only the consumer, never `servicebus`: the emulator loses its messages when its
+own container restarts.
+
+### Container smoke test
+
+```
+scripts/smoke-test.sh
+```
+
+It starts a separate copy of the stack (its own Compose project, so your data is never touched; stop your
+everyday stack first because the ports are the same), then:
+
+- **Positive:** waits for `/health/ready`, then expects `GET /api/products/{id}` for the seeded demo
+  product to return `200`.
+- **Negative:** stops the database container and expects `/health/ready` to return `503` while
+  `/health/live` still returns `200`.
+
+It always removes its stack at the end and exits non-zero if any check fails. On WSL without Docker
+Desktop's WSL integration, run it as `DOCKER=docker.exe scripts/smoke-test.sh`.
+With `SMOKE_TEST_SKIP_BUILD=true` it tests the `product-asset-manager:local` image that is already built
+instead of building one; CI uses this so the smoke test checks the exact image it later publishes.
+
+### How the containers are built
+
+- **One image, three jobs.** The same `product-asset-manager` image runs as the API, the consumer and the
+  migrator. Configuration decides which: `Api__Enabled`, `Consumer__Enabled`, or the `--migrate` argument.
+  Splitting the consumer into its own container means it can be stopped, restarted or scaled without
+  touching the API, and a crash in one does not take down the other.
+- **Multi-stage `Dockerfile`.** The first stage uses the .NET SDK image to restore and publish. The final
+  stage starts again from the much smaller ASP.NET runtime image and copies in only the published output,
+  so the SDK, the source code and the test projects never reach the image that runs.
+- **Non-root.** The container runs as the runtime image's built-in `app` user, so a bug in the app cannot
+  act as root inside the container.
+- **Migrations run once, before the app.** The `migrator` service runs the image with `--migrate`
+  (migrations, roles, the Admin account and the demo product) and exits. `api` and `consumer` wait for it
+  to finish successfully and never migrate themselves (`Database__InitializeOnStartup=false`), so several
+  copies of the API can start at once without racing to change the schema. This is used instead of an EF
+  Core migration bundle because a bundle can only apply migrations, not run the C# seeding.
+- **Configuration comes only from environment variables.** Compose builds the connection strings from
+  `.env`. The emulator's connection string uses its fixed, publicly documented development key, so it is
+  not a secret. The queue definitions live in `docker/servicebus/Config.json`.
+
+### Service Bus emulator limitations
+
+- **It forgets messages when its container restarts.** Restart the consumer, not the emulator.
+- **One shared key, no per-queue policies.** In Azure the app uses separate, least-privilege SAS policies;
+  the emulator only has `RootManageSharedAccessKey`.
+- **Message time-to-live is capped at one hour**, so `DefaultMessageTimeToLive` is `PT1H` in the config.
+- **The first message of a new session can take a few seconds** to be picked up, so a new order may stay
+  `Pending` for up to around ten seconds. Later orders for the same SKU are faster.
+- **It needs its own SQL Server** (`servicebus-sql`) and has no shell for health checks (see *Start-up order*).
+- **It sometimes drops the lock on a dead-lettered message straight after a cold start** (`MessageLockLost`).
+  `MalformedMessageTests` therefore *peeks* at the dead-letter queue, which needs no lock, instead of
+  receiving and completing the message. The dead-lettered test messages are left in place; the emulator
+  starts empty every run anyway.
+- **It can fail to start again after the machine restarts**, if its own SQL Server still holds the
+  previous databases (SQL error 5170 in `docker compose logs servicebus`). Recreate both:
+  `docker compose up -d --force-recreate servicebus-sql servicebus`.
+
+## Observability (OpenTelemetry and Grafana)
+
+The API and the consumer are instrumented with OpenTelemetry. Everything runs locally in the same
+`docker compose up`; no hosted service is used.
+
+```
+api ─┐                           ┌──▶ tempo (traces) ──┐
+     ├── OTLP ──▶ otel-collector ├──▶ prometheus (metrics) ├──▶ grafana
+consumer ┘                       └──▶ loki (logs) ─────┘
+```
+
+The app only ever talks to the Collector, never to a storage back end, so changing where telemetry goes is
+a Collector config change (`docker/otel-collector/config.yaml`), not an app change.
+
+### What is recorded
+
+| Signal | Contents |
+|---|---|
+| **Traces** | every HTTP request (health checks excluded), every EF Core query, `OrderPlaced publish` when the message is sent, `OrderPlaced process` in the consumer, and `order.stock_check` around the stock decision, the decrement and `SaveChanges()` (attributes `order.id`, `variant.sku`, `order.quantity`, `order.outcome`, `order.rejection_reason`, `order.save_attempts`). One purchase is **one trace** across both services. |
+| **Metrics** | HTTP request count and duration per route and status code; .NET runtime (GC, memory, threads, JIT); `orders.placed`; `orders.processed` tagged with `outcome` and `rejection_reason`; `orders.processing.duration` (ms, from `Pending` to the final status); `orders.pending`; `orders.pending.oldest_age` (s). |
+| **Logs** | everything written through `ILogger`, with the message template and its fields kept separate, and the trace id and span id of the request or message it was written in. |
+
+Every signal carries `service.name` (`inventory-api`, `order-consumer` or `database-migrator`),
+`service.version` (the commit SHA the image was built from) and `deployment.environment`.
+
+**How the trace crosses Service Bus.** The API writes the W3C `traceparent` of its publish span into the
+`OrderPlaced` message's application properties. The consumer reads it back and starts its processing span
+as a child, so the consumer's work belongs to the buyer's trace. The Azure SDK's own tracing was not used
+because it *links* the consumer span to a new trace rather than continuing the same one.
+
+**Privacy.** No email, name, user id or token is put in a span attribute, a metric tag or a log. Metric tags
+are low-cardinality on purpose: no order ids, user ids or SKUs.
+
+### Settings
+
+| Setting (environment variable) | Default | Meaning |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | not set | where to send telemetry. Compose sets `http://otel-collector:4317`; when it is not set (tests, plain `dotnet run`) nothing is exported. |
+| `OTEL_SERVICE_NAME` | `product-asset-manager` | `service.name`; Compose sets it per container |
+| `OpenTelemetry__TraceSamplingRatio` (`TRACE_SAMPLING_RATIO` in `.env`) | `1.0` | share of traces kept, 0 to 1. Parent-based, so the consumer follows the API's decision and a purchase's trace is never half kept. |
+| `OpenTelemetry__DeploymentEnvironment` | the ASP.NET Core environment name | `deployment.environment`; Compose sets `local` |
+| `OTEL_METRIC_EXPORT_INTERVAL` | 60000 ms | Compose sets 10000 so the dashboard and the alert react quickly |
+
+### Find a purchase's trace, logs and metrics
+
+1. Start the stack (`docker compose up -d`) and place a purchase as in *Try it* above. Note the `orderId`.
+2. Open Grafana at `http://localhost:3000` and log in with `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD`
+   from your `.env`.
+3. **Trace:** *Explore* → data source **Tempo** → query type *TraceQL* →
+   `{ span.order.id = "<orderId>" }` → open the trace. You see `POST api/orders` and its database queries
+   and `OrderPlaced publish` in `inventory-api`, then `OrderPlaced process`, `order.stock_check` and the
+   `SaveChanges()` query in `order-consumer`, all in one trace.
+4. **Logs:** *Explore* → data source **Loki** → `{service_name="order-consumer"} |= "<orderId>"`. Expand the
+   "confirmed" line and click **View trace in Tempo** to jump to the same trace. From a span in Tempo,
+   *Logs for this span* goes the other way.
+5. **Metrics:** *Dashboards* → folder **Product Asset Manager** → **Product Asset Manager**. Within about
+   10 seconds the confirmed count, the processing time and the request rate include the purchase.
+
+**Telemetry never breaks the shop.** Stop the Collector (`docker compose stop otel-collector`) and buy
+again: the API still returns `202` and the order is still confirmed; that telemetry is simply dropped.
+`docker compose start otel-collector` brings it back. Nothing depends on the Collector in `compose.yaml`.
+
+### The dashboard
+
+Provisioned from `docker/grafana/dashboards/product-asset-manager.json`:
+
+- **Orders:** confirmed and rejected in the selected range, orders placed, `Pending` now, the oldest
+  `Pending` order, confirmed vs rejected over time, and the 95th percentile processing time.
+- **HTTP (inventory-api, health checks excluded):** request rate, 5xx error rate and 95th percentile latency
+  per endpoint.
+
+The range totals use "highest minus lowest value" rather than `increase()`, because `increase()`
+extrapolates and would show fractions such as 6.3. The order counters are recorded as 0 when each process
+starts, so even a burst that lands inside the first export is counted.
+
+### The alert: orders stuck in `Pending`
+
+Provisioned from `docker/grafana/provisioning/alerting/alerts.yaml`. It fires when
+`orders_pending_oldest_age_seconds` has been **above 120 seconds for 30 seconds**.
+
+**Why 2 minutes.** Orders normally resolve within seconds (95th percentile about 1.3 s locally; the slowest
+normal case is the emulator picking up a brand-new session, about 10 s). 120 seconds is more than ten times
+that, so a slow moment or a consumer restart (30 to 60 s) does not fire it, but a customer is never left
+waiting long before someone hears that the consumer is down, failing or behind. The extra 30 seconds stops
+a single odd sample from firing it. Checked locally: with the consumer stopped, the alert went *pending* at
+about 140 s, *firing* at about 170 s, and back to normal about 20 s after the consumer restarted.
+
+### Observed load test
+
+The Stage 3 load scenario against the running stack:
+
+```bash
+docker compose up -d
+scripts/observed-load-test.sh
+```
+
+It sets the demo chair's stock to 6, fires 20 purchases at the same moment, waits for every order, and
+expects exactly 6 `Confirmed` and 14 `Rejected`. Then open the dashboard with a time range covering the last
+few minutes.
+
+![Dashboard after the load test: 6 confirmed, 14 rejected](docs/screenshots/load-test-dashboard.png)
+
+![One purchase trace crossing from the API to the consumer](docs/screenshots/purchase-trace.png)
+
+### Observability tests (NUnit)
+
+They run in-process with `WebApplicationFactory` and the OpenTelemetry in-memory exporter:
+
+- `TracePropagationTests` — the purchase's HTTP request span and the consumer's processing span share one
+  trace id.
+- `OrderMetricsTests` — one confirmed and one rejected purchase record exactly one `confirmed` and one
+  `rejected` (`insufficient_stock`) on the orders-processed counter.
+- `StockCheckSpanTests` — the stock check span sits inside the processing span, wraps the `SaveChanges()`
+  query, and records the outcome and the rejection reason.
+- `StructuredLogTests` — the consumer's log keeps its template and fields and carries the purchase's trace
+  id and the processing span's id.
+- `TraceSamplingTests` — the default keeps every trace; a ratio of 0 keeps none.
+
+## CI/CD (GitHub Actions)
+
+Everything is in one workflow, [`.github/workflows/ci.yml`](.github/workflows/ci.yml). It runs on every
+push to any branch, every pull request, and every `v*` tag.
+
+```
+push / pull request
+   ├── Build and test ─────────────────┐
+   └── Docker build and smoke test ────┼──▶ Publish image to GHCR
+                                       │      (only for a push to main or a v* tag,
+                                       │       and only if both jobs passed)
+```
+
+| Job | What it does |
+|---|---|
+| **Build and test** | restores (NuGet packages are cached between runs), builds in Release, checks every model change has a migration (`dotnet ef migrations has-pending-model-changes`), runs **all** NUnit tests, and uploads the results (`test-results`, a `.trx` file) as an artefact. A failing test fails the job and is shown by name on the run and the pull request. |
+| **Docker build and smoke test** | builds the Docker image **once**, then runs `scripts/smoke-test.sh` against that exact image (see *Container smoke test*). A broken `Dockerfile` or `compose.yaml` fails here, before merge. |
+| **Publish image to GHCR** | does **not** build. It receives the image the smoke test passed, checks its image ID matches, then tags it and pushes it to GitHub Container Registry. |
+
+**Build once, ship what was tested.** The image is built a single time, in the Docker job. On a push to `main`
+or a `v*` tag, that job saves the tested image as a short-lived artefact (kept one day) together with its
+image ID, Docker's fingerprint of the image's exact contents. The publish job loads it, refuses to continue
+if the ID differs, and only then pushes it. So the published image is byte-for-byte the one that passed the
+smoke test, even if a base image or a package changes in the meantime.
+
+**Where the tests get a database and Service Bus.** Nothing in the cloud. The job starts the `sqlserver`
+and `servicebus` services from `compose.yaml` as containers on the runner, then points the tests at them
+with environment variables (`TEST_SQL_CONNECTION_STRING` and `ServiceBus__*`). Compose is used instead of
+GitHub's `services:` block because the emulator needs its queue file mounted from the repository, and
+service containers start before the code is checked out.
+
+**Secrets.** The workflow contains no secrets and the repository needs none. `scripts/ci-create-env.sh`
+generates a fresh SQL Server password, admin password and JWT key for every run and masks them, so they
+show as `***` in logs. The emulator's key is its public development key. Publishing logs in with the
+built-in `GITHUB_TOKEN`, which GitHub creates for each run and which can only push packages for this
+repository (`packages: write`).
+
+### The image
+
+```
+ghcr.io/dushimepaulette1/product-asset-manager-backend
+```
+
+| What was pushed | Tags it gets | Example |
+|---|---|---|
+| a merge (push) to `main` | the short commit SHA, and `latest` | `3f2a9c1`, `latest` |
+| a tag such as `v1.2.0` | the short commit SHA, the version without the `v`, and the tag itself | `3f2a9c1`, `1.2.0`, `v1.2.0` |
+
+So every image can be traced to the exact commit it was built from, and released versions also have a
+readable name. `latest` is only a convenience for "newest build of `main`"; never deploy it.
+
+The commit is also baked into the image: CI passes it as the `GIT_SHA` build argument (and the branch or tag
+name as `APP_VERSION`), and the app reports them on `GET /version`:
+
+```json
+{ "version": "main", "commit": "3f2a9c1e..." }
+```
+
+To check an image yourself (the placeholder settings are only there because the app refuses to start
+without them; nothing connects to them for this check):
+
+```bash
+docker run --rm -d --name version-check -p 8081:8080 \
+  -e ConnectionStrings__DefaultConnection="Server=none;Database=none;User Id=none;Password=none" \
+  -e ServiceBus__ConnectionString="Endpoint=sb://none;SharedAccessKeyName=none;SharedAccessKey=none" \
+  -e ServiceBus__QueueName=orders \
+  -e ServiceBus__StockEventsConnectionString="Endpoint=sb://none;SharedAccessKeyName=none;SharedAccessKey=none" \
+  -e ServiceBus__StockEventsQueueName=stock-events \
+  -e Jwt__SigningKey=placeholder-key-only-for-a-version-check \
+  -e Database__InitializeOnStartup=false \
+  ghcr.io/dushimepaulette1/product-asset-manager-backend:<short-sha>
+curl http://localhost:8081/version
+docker stop version-check
+```
+
+### Branch protection
+
+`main` is protected: a pull request can only be merged once **Build and test** and **Docker build and
+smoke test** have passed (*Settings → Branches → Branch protection rule for `main` → Require status checks
+to pass before merging*).
+
+### Pipeline gate
+
+Checked with [PR #14](https://github.com/Dushimepaulette1/product-asset-manager-backend/pull/14), which
+targets `main` and was never merged:
+
+1. It added a deliberately failing test (`PipelineGateTests`).
+   **Build and test** failed, 60 passed and 1 failed, and the merge was blocked:
+   [failing run](https://github.com/Dushimepaulette1/product-asset-manager-backend/actions/runs/39573308394).
+2. The failing test was removed in the same PR. Both checks passed:
+   [passing run](https://github.com/Dushimepaulette1/product-asset-manager-backend/actions/runs/39574083834).
+
+## Getting Started (without Docker, against Azure)
+
+This is the path for working on the code with `dotnet run`, using LocalDB and a real Azure Service Bus
+namespace. The existing test suite also runs this way.
 
 ### Prerequisites
 
 - .NET SDK 10.0
 - SQL Server LocalDB
 - The `dotnet-ef` global tool: `dotnet tool install --global dotnet-ef` (skip if already installed)
+- An **Azure Service Bus namespace** — see [Azure Service Bus setup](#2-azure-service-bus-setup) below.
+  The API stops at startup if its Service Bus connection strings are not configured.
 
 ### 1. Clone and restore
 
@@ -66,15 +484,42 @@ cd product-asset-manager-backend
 dotnet restore
 ```
 
-### 2. Configure local secrets
+### 2. Azure Service Bus setup
 
-Two values are intentionally **never committed** to source control — a JWT signing key and the seeded
-Admin account's password — set them once via `dotnet user-secrets`, from the `src/` folder:
+The purchase flow needs a real Service Bus namespace. In the Azure Portal:
+
+1. Create a **Service Bus namespace on the Standard tier**. The Basic tier does not support sessions,
+   which the ordering guarantee depends on. Namespace names are globally unique, so pick your own.
+2. Inside it, create the queue **`orders`** with **Enable sessions** turned **on**. This can only be set
+   when the queue is created.
+3. Create a second queue, **`stock-events`**, with sessions **off**.
+4. Create a shared access policy on each queue (Queue → *Shared access policies* → *Add*):
+   - on `orders`: **Send** and **Listen**
+   - on `stock-events`: **Send**
+
+Nothing about the queues is committed to the repository: not the two connection strings, and not the
+queue names either. All four are read from configuration (`ServiceBus:ConnectionString`,
+`ServiceBus:StockEventsConnectionString`, `ServiceBus:QueueName`, `ServiceBus:StockEventsQueueName`) and
+you set them in the next step. Use whatever queue names you created; the commands below assume `orders`
+and `stock-events`.
+
+A Standard namespace has a fixed monthly charge whether or not it is used, so delete it when you have
+finished.
+
+### 3. Configure local secrets
+
+Six values are intentionally **never committed** to source control — a JWT signing key, the seeded
+Admin account's password, the two Service Bus connection strings, and the two queue names. Set them
+once via `dotnet user-secrets`, from the `src/` folder:
 
 ```
 cd src
 dotnet user-secrets set "Jwt:SigningKey" "CapstoneDemo-2026-LocalOnly-SigningKey-ChangeMe"
 dotnet user-secrets set "SeedAdmin:Password" "AdminDemo123!"
+dotnet user-secrets set "ServiceBus:ConnectionString" "<connection string of the orders queue policy>"
+dotnet user-secrets set "ServiceBus:StockEventsConnectionString" "<connection string of the stock-events queue policy>"
+dotnet user-secrets set "ServiceBus:QueueName" "orders"
+dotnet user-secrets set "ServiceBus:StockEventsQueueName" "stock-events"
 ```
 
 Any sufficiently long random string works for the signing key — this app only ever validates tokens it
@@ -82,7 +527,11 @@ signed itself, so there's no shared secret to obtain from anyone. The values abo
 README's demo credentials (below) assume; feel free to set your own instead if you don't need the demo
 login to work.
 
-### 3. Apply migrations and run
+If a Service Bus value is missing, the app stops at startup with a message naming the missing key
+(for example `ServiceBus:QueueName is not configured.`) instead of failing later on the first
+purchase.
+
+### 4. Apply migrations and run
 
 ```
 dotnet ef database update
@@ -91,11 +540,30 @@ dotnet run
 
 On first startup (Development environment only) the app also seeds the `Admin`/`User` roles and one
 Admin account, using `SeedAdmin:Email` (`appsettings.Development.json`, already `admin@local.dev`) and
-the `SeedAdmin:Password` secret set above.
+the `SeedAdmin:Password` secret set above. The order consumer starts with the API — there is nothing
+separate to run.
 
 The API listens at `http://localhost:5260` by default (see `src/Properties/launchSettings.json`).
 Swagger UI is available at `http://localhost:5260/swagger` — use it to authorize with a bearer token
 and try any endpoint interactively.
+
+### Try the purchase flow
+
+In Swagger (or any HTTP client), in order:
+
+1. `POST /api/auth/login` as the Admin (see [Demo Credentials](#demo-credentials)) and authorize with the token.
+2. `POST /api/categories`, then `POST /api/products` with one variant, e.g. `"sku": "DEMO-SKU", "quantity": 3`.
+   Copy the variant's `id` from the response.
+3. `POST /api/auth/register` a User, `POST /api/auth/login` as them, and authorize with *that* token.
+4. `POST /api/orders` with `{ "variantId": "<id>", "quantity": 2 }` → **`202 Accepted`** with an `orderId`.
+5. `GET /api/orders/{orderId}` → `Confirmed` (usually already, within a second or two). The variant's stock
+   is now 1.
+6. Buy `quantity: 5` more → still `202` (the endpoint never checks stock), then `GET` it → **`Rejected`**
+   with a reason such as `Only 1 unit(s) of 'X' were available.`, and the stock is unchanged.
+
+To see the message itself, open the `orders` queue in the Portal → *Service Bus Explorer* → *Peek*.
+While the API is running the consumer takes messages off almost immediately, so stop the app first if you
+want one to stay visible.
 
 ### Running the tests
 
@@ -110,9 +578,47 @@ Tests are NUnit, split into two kinds:
 - **API tests** (`tests/.../ApiTests`) exercise real HTTP calls through `WebApplicationFactory<Program>`
   against a second, separately disposable LocalDB database.
 
-Both kinds create and drop their own database per test run, so `dotnet test` needs no setup beyond
-LocalDB already being installed — it does not touch the `ProductAssetManagerDb` database `dotnet run`
-uses.
+Both kinds create and drop their own database per test run, and neither touches the
+`ProductAssetManagerDb` database `dotnet run` uses.
+
+The API tests boot the real application, so they need the Service Bus secrets from step 3, and every test
+that places an order talks to your **real** namespace — nothing is mocked. Service tests need only
+LocalDB. The async tests are the ones to read:
+
+- `AsyncPurchaseTests` — buy, get `202`, poll `GET /api/orders/{id}` until `Confirmed`, stock reduced.
+- `LoadBufferingTests` — 20 concurrent purchases against 6 units of stock: exactly 6 `Confirmed`, 14
+  `Rejected`, final stock exactly 0.
+- `ConsumerRecoveryTests` — stop the consumer, place orders (they stay `Pending`), restart it: every order
+  resolves and stock drops by exactly one unit per order.
+
+**Running the tests against containers instead (no LocalDB, no Azure).** This is what CI does. Start the
+infrastructure, then point the tests at it:
+
+```bash
+docker compose up -d --wait sqlserver servicebus
+docker compose run --rm servicebus-ready
+
+export TEST_SQL_CONNECTION_STRING="Server=localhost,14333;User Id=sa;Password=<SQL_SA_PASSWORD from .env>;TrustServerCertificate=True;MultipleActiveResultSets=true"
+export ServiceBus__ConnectionString="Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;"
+export ServiceBus__StockEventsConnectionString="$ServiceBus__ConnectionString"
+export ServiceBus__QueueName=orders ServiceBus__StockEventsQueueName=stock-events
+dotnet test
+```
+
+(From WSL with the Windows `dotnet.exe`, also list these variables in `WSLENV` so Windows sees them.)
+
+**Do not run the tests while the Docker stack's `consumer` container is running.** It listens to the same
+emulator queue as the test host and can take the tests' messages first, leaving their orders `Pending`. Stop
+it with `docker compose stop api consumer` before `dotnet test`.
+
+In tests the consumer does not start on its own (`ServiceBus:AutoStartConsumer` is `false` in the test
+host), so tests that don't want it running stay deterministic; the async tests above start it
+explicitly. Tests that place an order without starting the consumer leave their `OrderPlaced` message in
+the queue. That is harmless — a later consumer completes and discards a message whose order does not exist
+in its database — but it means the queue slowly collects test messages unless you purge it.
+`MalformedMessageTests` also leaves its two deliberately broken messages in the dead-letter queue: it only
+peeks at them to check the dead-letter reason. Purge the dead-letter queue in the Portal now and then if
+you run the suite against Azure often.
 
 ## Demo Credentials
 
@@ -157,14 +663,81 @@ Since both are new entities tracked by the same `DbContext` instance, adding the
 `SaveChangesAsync()` once gives that atomicity for free: EF Core wraps one `SaveChanges` call's inserts
 in a single database transaction implicitly, so there's no need to manage one by hand here.
 
-**The purchase endpoint needs that same atomicity — a new `Order` and the corresponding stock decrease
-must succeed or fail together.** Unlike product creation, the stock decrease can't just be "read the
-current quantity, then write the new one": two near-simultaneous purchases for the last unit could both
-read the same starting stock, both pass validation, and both succeed — overselling. The fix collapses
-the check and the decrease into one atomic conditional `UPDATE` (EF Core's `ExecuteUpdateAsync` with a
-`WHERE Quantity >= @qty` clause), so the check happens at the moment of the database write, not the
-start of the request. The database itself serializes concurrent writers to the same row, so the losing
-request's `UPDATE` naturally matches zero rows once stock is gone — no explicit locking or
-optimistic-concurrency retry loop needed. Because `ExecuteUpdateAsync` bypasses the normal change
-tracker (unlike the product-creation case above), it's wrapped in an explicit database transaction
-together with the `Order` insert, so the two still commit or roll back as one unit.
+**Purchasing is asynchronous, and the queue — not the database — is what prevents overselling.** The
+original synchronous purchase guarded the last unit with an atomic conditional `UPDATE`. That was replaced
+when the flow moved to Service Bus. Every `OrderPlaced` message carries the variant's SKU as its
+`SessionId`, and the consumer's processor runs with `MaxConcurrentCallsPerSession = 1`. Service Bus then
+hands out one session to one receiver at a time and delivers its messages in order, so purchases of the
+same variant are processed strictly one after another and the earliest buyers get the last units. Different
+SKUs are still processed in parallel (up to five sessions at once).
+
+**Sessions do not make the concurrency token redundant.** Sessions only serialise purchases against *other
+purchases*. An Admin editing stock through `PATCH /api/variants/{sku}/stock` is a completely separate code
+path that never touches the queue, and could write the same row at the same moment. `Variant.RowVersion`
+(a SQL Server `rowversion`) is the guard for that: if the row changed between the consumer reading it and
+saving, EF Core throws `DbUpdateConcurrencyException`, and the consumer reloads the fresh values and
+re-decides — up to three attempts — rather than overwriting the Admin's change. Because real contention is
+now rare (admin against consumer, no longer buyer against buyer), an optimistic retry is the right size of
+tool here.
+
+**A message is only completed after everything it triggered has succeeded.** The consumer runs in
+peek-lock mode with auto-complete off. It completes the message last: after the single `SaveChanges()`
+that confirms or rejects the order, and after the `StockDecremented` event is published. If anything before
+that throws, the message is left uncompleted, so the lock expires and Service Bus redelivers it — the order
+is not lost. The exception is logged by the processor's error handler and does not stop the consumer.
+
+**Redelivery cannot double-process an order.** Service Bus delivers at least once, so a message can arrive
+again after it was already handled (for example if the process dies after the database save but before the
+message is completed). The consumer therefore checks that the order is still `Pending` before doing
+anything; if it is not, it completes the message and stops. A redelivered message for a confirmed order
+leaves stock untouched.
+
+**The producer never leaves a `Pending` order that nothing will process.** The order is saved before the
+message is sent. If sending fails, the just-created order is deleted and the error is rethrown, so the
+caller gets an honest error rather than an order that looks accepted and never resolves.
+
+**The price is fixed when the order is placed, not when it is processed.** `UnitPriceAtPurchase` is set
+by the producer from the variant's price (or the product's base price), so a price change between the click
+and the background processing does not affect an order the shopper already placed.
+
+**The message body is just the order id.** `MessageId` already carries it (which is also what
+the queue's optional duplicate detection keys on), and the consumer's first step is loading the order
+anyway, so `VariantId` and `Quantity` are read from the database rather than copied into the message
+where they could drift from it.
+
+**Two events, one consumer.** `OrderPlaced` is consumed by this application. `StockDecremented` is
+published to a separate `stock-events` queue after a confirmed order commits, so something else — a
+low-stock alert, a dashboard — could react to inventory changes without knowing anything about checkout.
+Nothing in this project consumes it yet.
+
+**The `Order.Status` enum is ordered `Confirmed, Pending, Rejected`, on purpose.** C# defaults an unset enum
+to its first member, and EF Core treats a property equal to its CLR default as "unset" and lets a database
+default take over. With `Pending` first, explicitly saving a new order as `Pending` would have been silently
+replaced by the database default. Putting `Confirmed` first avoids that; existing orders, which all
+succeeded under the old synchronous flow, were backfilled to `Confirmed` by the migration. Enums are
+serialised in API responses as text (`"Pending"`), not numbers.
+
+**`POST /api/orders` changed contract.** It used to return `201` with the full order after reducing stock.
+It now returns `202` with only an `orderId`, because the outcome is not known yet. Clients must read
+`GET /api/orders/{id}` for the result.
+
+## Known Limitations
+
+- **Checkout still needs the database.** The producer saves the `Pending` order before publishing, so the
+  queue protects the stock update, not the order insert: a database that is slow makes checkout slower,
+  and one that is down makes it fail.
+- **A message that keeps failing is eventually dead-lettered.** After the queue's maximum delivery count
+  (a queue setting; Service Bus defaults it to 10) the message moves to the dead-letter queue, where nothing
+  in this project reads it, so that order stays `Pending`.
+- **`StockDecremented` has no subscriber** — it is published for future consumers.
+- **The order-placing tests need a real Service Bus namespace**, and leave messages behind, as described
+  under *Running the tests*.
+- **The Docker stack connects to SQL Server as `sa`.** That is fine for a throwaway local stack; a real
+  deployment would give the app its own login with only the permissions it needs.
+- **The Docker stack is for local use only.** It uses the Service Bus emulator and placeholder secrets
+  from `.env`; it is not a production deployment.
+- **Tempo and Loki keep their data inside their containers**, so traces and logs are lost when those
+  containers are recreated. Prometheus keeps metrics in a named volume.
+- **EF Core instrumentation is a pre-release package** (`OpenTelemetry.Instrumentation.EntityFrameworkCore`
+  1.20.0-beta.1). It has never had a stable release; the rest of the OpenTelemetry packages are stable 1.20.0.
+- **Tempo is pinned to 2.9.0**, the last 2.x release, rather than the newer 3.x line.

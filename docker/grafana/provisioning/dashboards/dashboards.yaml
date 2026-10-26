@@ -1,0 +1,10 @@
+apiVersion: 1
+
+providers:
+  - name: product-asset-manager
+    folder: Product Asset Manager
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
