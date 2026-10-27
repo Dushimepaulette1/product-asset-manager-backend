@@ -105,18 +105,6 @@ public class OrderService : IOrderService
             return new GetOrderResult(false, false, true, null);
         }
 
-        var response = new OrderResponse(
-            Id: order.Id,
-            Status: order.Status,
-            RejectionReason: order.RejectionReason,
-            VariantId: order.VariantId,
-            VariantSku: order.Variant.SKU,
-            VariantName: order.Variant.Name,
-            QuantityPurchased: order.QuantityPurchased,
-            UnitPriceAtPurchase: order.UnitPriceAtPurchase,
-            TotalPrice: order.UnitPriceAtPurchase * order.QuantityPurchased,
-            OrderDate: order.OrderDate);
-
-        return new GetOrderResult(true, false, false, response);
+        return new GetOrderResult(true, false, false, OrderMapper.ToResponse(order));
     }
 }
