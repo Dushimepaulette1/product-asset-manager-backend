@@ -1,8 +1,11 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using Azure.Messaging.ServiceBus;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using ProductAssetManager.Api.Data;
 using ProductAssetManager.Api.DTOs;
@@ -107,6 +110,76 @@ public abstract class ApiTestBase
             .Where(o => o.Id == orderId)
             .Select(o => o.Status)
             .FirstAsync();
+    }
+
+    protected async Task SetOrderStatusAsync(Guid orderId, OrderStatus status)
+    {
+        using var scope = Factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        var order = await dbContext.Orders.FirstAsync(o => o.Id == orderId);
+        order.Status = status;
+
+        await dbContext.SaveChangesAsync();
+    }
+
+    protected async Task<Guid> PlacePendingOrderAsync(Guid variantId, int quantity)
+    {
+        var response = await Client.PostAsJsonAsync("/api/orders", new CreateOrderRequest { VariantId = variantId, Quantity = quantity });
+        Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.Accepted));
+
+        var accepted = await response.Content.ReadFromJsonAsync<OrderAcceptedResponse>(JsonTestOptions.Default);
+        return accepted!.OrderId;
+    }
+
+    protected static bool IsSavingOrderAs(DbContext context, Guid orderId, OrderStatus status) =>
+        context.ChangeTracker.Entries<Order>().Any(entry =>
+            entry.Entity.Id == orderId && entry.State == EntityState.Modified && entry.Entity.Status == status);
+
+    protected List<Activity> ProcessSpansFor(Guid orderId) =>
+        Factory.ExportedActivities.Snapshot()
+            .Where(span => span.DisplayName == OrderTelemetry.ProcessSpanName && span.GetTagItem("order.id") as string == orderId.ToString())
+            .ToList();
+
+    protected bool HasLog(string template, Guid orderId) =>
+        Factory.CapturedLogs.Snapshot().Any(log =>
+            log.Body == template && Equals(log.Attributes.GetValueOrDefault("OrderId"), orderId));
+
+    protected async Task<ServiceBusReceivedMessage?> FindStockDecrementedAsync(Guid orderId, TimeSpan wait)
+    {
+        var client = Factory.Services.GetRequiredKeyedService<ServiceBusClient>(ServiceBusQueues.StockEvents);
+        var queueName = Factory.Services.GetRequiredService<IConfiguration>()["ServiceBus:StockEventsQueueName"]!;
+        var messageId = $"{orderId}-stock-decremented";
+        var deadline = DateTime.UtcNow + wait;
+
+        await using var receiver = client.CreateReceiver(queueName);
+
+        while (true)
+        {
+            long fromSequenceNumber = 0;
+            IReadOnlyList<ServiceBusReceivedMessage> page;
+
+            do
+            {
+                page = await receiver.PeekMessagesAsync(100, fromSequenceNumber);
+
+                var match = page.FirstOrDefault(message => message.MessageId == messageId);
+                if (match is not null)
+                {
+                    return match;
+                }
+
+                fromSequenceNumber = page.Count > 0 ? page[^1].SequenceNumber + 1 : fromSequenceNumber;
+            }
+            while (page.Count > 0);
+
+            if (DateTime.UtcNow >= deadline)
+            {
+                return null;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1));
+        }
     }
 
     protected async Task<Guid> SeedVariantAsync(string sku, int quantity)

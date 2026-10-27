@@ -13,6 +13,7 @@ public static class OrderTelemetry
     public const string OutcomeConfirmed = "confirmed";
     public const string OutcomeRejected = "rejected";
     public const string RejectionReasonInsufficientStock = "insufficient_stock";
+    public const string OutcomeSkippedCancelled = "skipped_cancelled";
 
     public static readonly ActivitySource ActivitySource = new(SourceName);
 }

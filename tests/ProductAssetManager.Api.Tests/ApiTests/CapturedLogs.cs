@@ -10,7 +10,8 @@ public record CapturedLog(
     string? Body,
     ActivityTraceId TraceId,
     ActivitySpanId SpanId,
-    IReadOnlyDictionary<string, object?> Attributes);
+    IReadOnlyDictionary<string, object?> Attributes,
+    Exception? Exception);
 
 public class CapturedLogs : BaseProcessor<LogRecord>
 {
@@ -30,6 +31,6 @@ public class CapturedLogs : BaseProcessor<LogRecord>
             }
         }
 
-        _logs.Enqueue(new CapturedLog(data.CategoryName, data.Body, data.TraceId, data.SpanId, attributes));
+        _logs.Enqueue(new CapturedLog(data.CategoryName, data.Body, data.TraceId, data.SpanId, attributes, data.Exception));
     }
 }
