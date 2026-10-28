@@ -167,6 +167,34 @@ public class CancelRaceTests : ApiTestBase
     }
 
     [Test]
+    public async Task When_TwoContextsSaveTheSameLoadedOrder_Should_RejectTheSecondSaveAndKeepTheFirstOutcome()
+    {
+        var variantId = await SeedVariantAsync(Sku, 5);
+        var orderId = await PlacePendingOrderAsync(variantId, 1);
+
+        using var confirmingScope = Factory.Services.CreateScope();
+        using var cancellingScope = Factory.Services.CreateScope();
+        var confirmingContext = confirmingScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var cancellingContext = cancellingScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        Assert.That(cancellingContext, Is.Not.SameAs(confirmingContext));
+
+        var orderToConfirm = await confirmingContext.Orders.SingleAsync(o => o.Id == orderId);
+        var orderToCancel = await cancellingContext.Orders.SingleAsync(o => o.Id == orderId);
+        Assert.That(orderToConfirm.Status, Is.EqualTo(OrderStatus.Pending));
+        Assert.That(orderToCancel.Status, Is.EqualTo(OrderStatus.Pending));
+
+        orderToConfirm.Status = OrderStatus.Confirmed;
+        await confirmingContext.SaveChangesAsync();
+
+        orderToCancel.Status = OrderStatus.Cancelled;
+        Assert.ThrowsAsync<DbUpdateConcurrencyException>(
+            () => cancellingContext.SaveChangesAsync(),
+            "the cancelling context still holds the RowVersion it read before the confirmation committed");
+
+        Assert.That(await GetOrderStatusAsync(orderId), Is.EqualTo(OrderStatus.Confirmed), "the first save's outcome is kept");
+    }
+
+    [Test]
     public async Task When_ManyOrdersAreCancelledWhileTheConsumerRuns_Should_GiveEveryOrderExactlyOneConsistentOutcome()
     {
         const int orderCount = 20;

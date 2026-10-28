@@ -37,6 +37,7 @@ public class CancelledMessageProcessingTests : ApiTestBase
         Assert.That(await GetOrderStatusAsync(cancelledOrderId), Is.EqualTo(OrderStatus.Cancelled));
         Assert.That(await GetVariantQuantityAsync(Sku), Is.EqualTo(4), "only the later order may take stock");
         Assert.That(HasLog(SkippedTemplate, cancelledOrderId), Is.True, "the consumer should log why it skipped the order");
+        Assert.That(ProcessSpansFor(cancelledOrderId), Has.Count.EqualTo(1), "the message was completed on its first delivery, not redelivered");
 
         var processSpan = await WaitForOrderSpanAsync(OrderTelemetry.ProcessSpanName, cancelledOrderId);
         Assert.That(processSpan!.GetTagItem("order.outcome"), Is.EqualTo(OrderTelemetry.OutcomeSkippedCancelled));

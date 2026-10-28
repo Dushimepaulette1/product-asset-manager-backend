@@ -86,6 +86,37 @@ public class OrderMetricsTests : ApiTestBase
     }
 
     [Test]
+    public void When_OrderMetricsIsCreated_Should_StartTheCancelledSeriesAtZero()
+    {
+        // The SetUp listener enqueues one entry per counted order, so it drops zero values; capture them raw here.
+        var meterFactory = Factory.Services.GetRequiredService<IMeterFactory>();
+        var cancelledValues = new ConcurrentQueue<long>();
+
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Scope == meterFactory
+                && instrument.Meter.Name == OrderMetrics.MeterName
+                && instrument.Name == OrderMetrics.OrdersProcessedName)
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, value, tags, _) =>
+        {
+            if (tags.ToArray().Any(tag => tag.Key == "outcome" && Equals(tag.Value, OrderTelemetry.OutcomeCancelled)))
+            {
+                cancelledValues.Enqueue(value);
+            }
+        });
+        listener.Start();
+
+        _ = new OrderMetrics(meterFactory);
+
+        Assert.That(cancelledValues, Is.EqualTo(new long[] { 0 }), "a zero cancelled series exists before the first cancellation, so dashboards show 0 rather than no data");
+    }
+
+    [Test]
     public async Task When_TheConsumerSkipsACancelledOrder_Should_NotCountItAgain()
     {
         var variantId = await SeedVariantAsync("ORDER-METRICS-SKU", 5);
