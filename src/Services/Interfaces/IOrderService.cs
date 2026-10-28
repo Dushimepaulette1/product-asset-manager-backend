@@ -7,4 +7,6 @@ public interface IOrderService
     Task<CreateOrderResult> CreateAsync(string userId, CreateOrderRequest request);
 
     Task<GetOrderResult> GetByIdAsync(Guid orderId, string requestingUserId, bool isAdmin, CancellationToken cancellationToken = default);
+
+    Task<CancelOrderResult> CancelAsync(Guid orderId, string requestingUserId, CancellationToken cancellationToken = default);
 }

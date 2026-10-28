@@ -15,6 +15,8 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
 
     public CapturedLogs CapturedLogs { get; } = new();
 
+    public BeforeSaveHook BeforeSaveHook { get; } = new();
+
     private readonly IReadOnlyDictionary<string, string?> _settings;
 
     public CustomWebApplicationFactory(IReadOnlyDictionary<string, string?>? settings = null)
@@ -59,7 +61,7 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
             }
 
             services.AddDbContext<ApplicationDbContext>(options =>
-                options.UseSqlServer(TestDatabase.ApiTestsConnectionString));
+                options.UseSqlServer(TestDatabase.ApiTestsConnectionString).AddInterceptors(BeforeSaveHook));
 
             services.ConfigureOpenTelemetryTracerProvider(tracing => tracing.AddInMemoryExporter(ExportedActivities));
             services.ConfigureOpenTelemetryLoggerProvider(logging => logging.AddProcessor(CapturedLogs));

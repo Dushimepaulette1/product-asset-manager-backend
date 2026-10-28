@@ -142,19 +142,16 @@ public class OrderConsumer : BackgroundService
 
         if (order.Status != OrderStatus.Pending)
         {
-            _logger.LogInformation(
-                "Order {OrderId} is already {Status}; ignoring a redelivered message",
-                order.Id,
-                order.Status);
-
-            await args.CompleteMessageAsync(args.Message, args.CancellationToken);
+            await SkipNonPendingAsync(args, order, processActivity);
             return;
         }
 
         var variant = order.Variant;
         var confirmed = false;
-        string outcome;
-        string? rejectionReason;
+        var saved = false;
+        var orderDeleted = false;
+        string? outcome = null;
+        string? rejectionReason = null;
 
         using (var stockCheckActivity = OrderTelemetry.ActivitySource.StartActivity(OrderTelemetry.StockCheckSpanName))
         {
@@ -167,7 +164,10 @@ public class OrderConsumer : BackgroundService
             const int maxAttempts = 3;
             for (var attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                saveAttempts = attempt;
+                if (order.Status != OrderStatus.Pending)
+                {
+                    break;
+                }
 
                 if (variant.Quantity >= order.QuantityPurchased)
                 {
@@ -185,27 +185,65 @@ public class OrderConsumer : BackgroundService
 
                 try
                 {
+                    saveAttempts++;
                     await dbContext.SaveChangesAsync(args.CancellationToken);
+                    saved = true;
                     break;
                 }
                 catch (DbUpdateConcurrencyException ex) when (attempt < maxAttempts)
                 {
-                    foreach (var entry in ex.Entries)
+                    _logger.LogWarning(
+                        "Concurrency conflict saving order {OrderId} on attempt {Attempt} ({ConflictingEntities}); reloading the order and its variant",
+                        order.Id,
+                        attempt,
+                        string.Join(", ", ex.Entries.Select(entry => entry.Metadata.ClrType.Name)));
+
+                    // The failed save rolled back both updates, so reload both: reloading only the conflicting
+                    // entry would keep the other's in-memory change, such as a stock decrement that would apply twice.
+                    await dbContext.Entry(order).ReloadAsync(args.CancellationToken);
+                    await dbContext.Entry(variant).ReloadAsync(args.CancellationToken);
+
+                    if (dbContext.Entry(order).State == EntityState.Detached)
                     {
-                        await entry.ReloadAsync(args.CancellationToken);
+                        orderDeleted = true;
+                        break;
                     }
                 }
             }
 
-            outcome = confirmed ? OrderTelemetry.OutcomeConfirmed : OrderTelemetry.OutcomeRejected;
-            rejectionReason = confirmed ? null : OrderTelemetry.RejectionReasonInsufficientStock;
+            if (saved)
+            {
+                outcome = confirmed ? OrderTelemetry.OutcomeConfirmed : OrderTelemetry.OutcomeRejected;
+                rejectionReason = confirmed ? null : OrderTelemetry.RejectionReasonInsufficientStock;
+            }
+            else if (order.Status == OrderStatus.Cancelled)
+            {
+                outcome = OrderTelemetry.OutcomeSkippedCancelled;
+            }
 
             stockCheckActivity?.SetTag("order.outcome", outcome);
             stockCheckActivity?.SetTag("order.rejection_reason", rejectionReason);
             stockCheckActivity?.SetTag("order.save_attempts", saveAttempts);
         }
 
-        _orderMetrics.OrderProcessed(outcome, rejectionReason, DateTime.UtcNow - order.OrderDate);
+        if (orderDeleted)
+        {
+            _logger.LogWarning(
+                "Order {OrderId} from message {MessageId} was deleted while it was being processed; completing the message because retrying cannot help",
+                order.Id,
+                args.Message.MessageId);
+
+            await args.CompleteMessageAsync(args.Message, args.CancellationToken);
+            return;
+        }
+
+        if (!saved)
+        {
+            await SkipNonPendingAsync(args, order, processActivity);
+            return;
+        }
+
+        _orderMetrics.OrderProcessed(outcome!, rejectionReason, DateTime.UtcNow - order.OrderDate);
 
         if (confirmed)
         {
@@ -235,6 +273,27 @@ public class OrderConsumer : BackgroundService
                 order.Id,
                 variant.SKU,
                 order.RejectionReason);
+        }
+
+        await args.CompleteMessageAsync(args.Message, args.CancellationToken);
+    }
+
+    private async Task SkipNonPendingAsync(ProcessSessionMessageEventArgs args, Order order, Activity? processActivity)
+    {
+        if (order.Status == OrderStatus.Cancelled)
+        {
+            processActivity?.SetTag("order.outcome", OrderTelemetry.OutcomeSkippedCancelled);
+
+            _logger.LogInformation(
+                "Order {OrderId} was cancelled before processing; skipping without changing stock",
+                order.Id);
+        }
+        else
+        {
+            _logger.LogInformation(
+                "Order {OrderId} is already {Status}; ignoring a redelivered message",
+                order.Id,
+                order.Status);
         }
 
         await args.CompleteMessageAsync(args.Message, args.CancellationToken);

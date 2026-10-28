@@ -27,7 +27,7 @@ public class OrderMetrics
         _ordersProcessed = meter.CreateCounter<long>(
             OrdersProcessedName,
             unit: "{order}",
-            description: "Orders the consumer moved from Pending to a final status.");
+            description: "Orders moved from Pending to a final status.");
 
         _processingDuration = meter.CreateHistogram(
             ProcessingDurationName,
@@ -45,9 +45,13 @@ public class OrderMetrics
             { "outcome", OrderTelemetry.OutcomeRejected },
             { "rejection_reason", OrderTelemetry.RejectionReasonInsufficientStock }
         });
+        _ordersProcessed.Add(0, new TagList { { "outcome", OrderTelemetry.OutcomeCancelled } });
     }
 
     public void OrderPlaced() => _ordersPlaced.Add(1);
+
+    // Counter only: a cancellation's timing is the shopper's choice, not processing latency.
+    public void OrderCancelled() => _ordersProcessed.Add(1, new TagList { { "outcome", OrderTelemetry.OutcomeCancelled } });
 
     public void OrderProcessed(string outcome, string? rejectionReason, TimeSpan timeSincePlaced)
     {

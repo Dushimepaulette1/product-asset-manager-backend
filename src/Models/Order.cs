@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace ProductAssetManager.Api.Models;
 
 public class Order
@@ -21,4 +23,7 @@ public class Order
     public OrderStatus Status { get; set; }
 
     public string? RejectionReason { get; set; }
+
+    [Timestamp]
+    public byte[] RowVersion { get; set; } = Array.Empty<byte>();
 }
