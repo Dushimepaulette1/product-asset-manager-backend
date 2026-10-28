@@ -58,4 +58,29 @@ public class OrdersController : ControllerBase
 
         return Ok(result.Order);
     }
+
+    [HttpPost("{id:guid}/cancel")]
+    public async Task<IActionResult> Cancel(Guid id, CancellationToken cancellationToken)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
+
+        var result = await _orderService.CancelAsync(id, userId, cancellationToken);
+
+        if (result.NotFound)
+        {
+            return NotFound(new { message = $"Order '{id}' was not found." });
+        }
+
+        if (result.NotPending)
+        {
+            return Conflict(new { message = $"Order '{id}' is {result.CurrentStatus} and can no longer be cancelled." });
+        }
+
+        if (result.ConcurrencyConflict)
+        {
+            return Conflict(new { message = $"Order '{id}' kept changing while it was being cancelled. Please try again." });
+        }
+
+        return Ok(result.Order);
+    }
 }

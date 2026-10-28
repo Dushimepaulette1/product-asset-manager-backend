@@ -107,4 +107,55 @@ public class OrderService : IOrderService
 
         return new GetOrderResult(true, false, false, OrderMapper.ToResponse(order));
     }
+
+    public async Task<CancelOrderResult> CancelAsync(Guid orderId, string requestingUserId, CancellationToken cancellationToken = default)
+    {
+        var order = await _dbContext.Orders
+            .Include(o => o.Variant)
+            .FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken);
+
+        if (order is null || order.UserId != requestingUserId)
+        {
+            return new CancelOrderResult(false, true, false, false, null, null);
+        }
+
+        if (order.Status != OrderStatus.Pending)
+        {
+            return new CancelOrderResult(false, false, true, false, order.Status, null);
+        }
+
+        const int maxAttempts = 3;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            order.Status = OrderStatus.Cancelled;
+
+            try
+            {
+                await _dbContext.SaveChangesAsync(cancellationToken);
+
+                _orderMetrics.OrderCancelled();
+
+                return new CancelOrderResult(true, false, false, false, OrderStatus.Cancelled, OrderMapper.ToResponse(order));
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Order.RowVersion changed after we read it: the consumer decided, the order was deleted, or another
+                // update touched the row. Decide again from the committed row; only a still-Pending order is retried.
+                var entry = _dbContext.Entry(order);
+                await entry.ReloadAsync(cancellationToken);
+
+                if (entry.State == EntityState.Detached)
+                {
+                    return new CancelOrderResult(false, true, false, false, null, null);
+                }
+
+                if (order.Status != OrderStatus.Pending)
+                {
+                    return new CancelOrderResult(false, false, true, false, order.Status, null);
+                }
+            }
+        }
+
+        return new CancelOrderResult(false, false, false, true, OrderStatus.Pending, null);
+    }
 }

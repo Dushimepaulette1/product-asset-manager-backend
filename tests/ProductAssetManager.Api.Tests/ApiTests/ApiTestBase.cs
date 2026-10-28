@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -131,6 +132,12 @@ public abstract class ApiTestBase
         var accepted = await response.Content.ReadFromJsonAsync<OrderAcceptedResponse>(JsonTestOptions.Default);
         return accepted!.OrderId;
     }
+
+    protected Task<HttpResponseMessage> CancelOrderAsync(Guid orderId, HttpClient? client = null) =>
+        (client ?? Client).PostAsync($"/api/orders/{orderId}/cancel", null);
+
+    protected ProcessedOrdersListener ListenToProcessedOrders() =>
+        new(Factory.Services.GetRequiredService<IMeterFactory>());
 
     protected static bool IsSavingOrderAs(DbContext context, Guid orderId, OrderStatus status) =>
         context.ChangeTracker.Entries<Order>().Any(entry =>

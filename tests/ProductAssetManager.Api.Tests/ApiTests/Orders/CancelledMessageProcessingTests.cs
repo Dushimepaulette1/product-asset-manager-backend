@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using ProductAssetManager.Api.Models;
 using ProductAssetManager.Api.Observability;
@@ -20,11 +21,13 @@ public class CancelledMessageProcessingTests : ApiTestBase
     [Test]
     public async Task When_OrderIsCancelledBeforeTheConsumerReadsIt_Should_SkipItWithoutTouchingStockAndCompleteTheMessage()
     {
+        using var metrics = ListenToProcessedOrders();
         var variantId = await SeedVariantAsync(Sku, 5);
 
         var cancelledOrderId = await PlacePendingOrderAsync(variantId, 2);
         var laterOrderId = await PlacePendingOrderAsync(variantId, 1);
-        await SetOrderStatusAsync(cancelledOrderId, OrderStatus.Cancelled);
+        var cancelResponse = await CancelOrderAsync(cancelledOrderId);
+        Assert.That(cancelResponse.StatusCode, Is.EqualTo(HttpStatusCode.OK));
 
         await ResumeConsumerAsync();
 
@@ -45,5 +48,9 @@ public class CancelledMessageProcessingTests : ApiTestBase
 
         Assert.That(await FindStockDecrementedAsync(laterOrderId, TimeSpan.FromSeconds(30)), Is.Not.Null, "the later order's event shows the session has finished");
         Assert.That(await FindStockDecrementedAsync(cancelledOrderId, TimeSpan.Zero), Is.Null, "no StockDecremented may be published for a cancelled order");
+
+        await metrics.WaitForTotalAsync(2, TimeSpan.FromSeconds(10));
+        Assert.That(metrics.Count(OrderTelemetry.OutcomeCancelled), Is.EqualTo(1), "the cancellation is counted once by the API; the consumer's skip adds nothing");
+        Assert.That(metrics.Total, Is.EqualTo(2));
     }
 }
