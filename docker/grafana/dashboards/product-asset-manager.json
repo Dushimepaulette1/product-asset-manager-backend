@@ -38,7 +38,7 @@
       "gridPos": {
         "x": 0,
         "y": 1,
-        "w": 5,
+        "w": 4,
         "h": 5
       },
       "targets": [
@@ -86,9 +86,9 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 5,
+        "x": 4,
         "y": 1,
-        "w": 5,
+        "w": 4,
         "h": 5
       },
       "targets": [
@@ -128,6 +128,56 @@
       "description": "Orders the consumer rejected (not enough stock) in the selected time range."
     },
     {
+      "id": 14,
+      "type": "stat",
+      "title": "Cancelled (selected range)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 1,
+        "w": 4,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(max_over_time(orders_processed_total{outcome=\"cancelled\"}[$__range]) - min_over_time(orders_processed_total{outcome=\"cancelled\"}[$__range]))",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "noValue": "0",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "description": "Orders shoppers cancelled while they were still Pending, in the selected time range."
+    },
+    {
       "id": 4,
       "type": "stat",
       "title": "Pending now",
@@ -136,9 +186,9 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 10,
+        "x": 12,
         "y": 1,
-        "w": 5,
+        "w": 4,
         "h": 5
       },
       "targets": [
@@ -186,9 +236,9 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 15,
+        "x": 16,
         "y": 1,
-        "w": 5,
+        "w": 4,
         "h": 5
       },
       "targets": [
@@ -291,7 +341,7 @@
     {
       "id": 7,
       "type": "timeseries",
-      "title": "Confirmed vs rejected orders",
+      "title": "Orders by outcome",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -324,7 +374,53 @@
           },
           "decimals": 0
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "confirmed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "rejected"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cancelled"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -332,7 +428,7 @@
           "placement": "bottom"
         }
       },
-      "description": "Orders resolved per interval, split by outcome."
+      "description": "Orders resolved per interval, split by outcome: confirmed, rejected or cancelled."
     },
     {
       "id": 8,
