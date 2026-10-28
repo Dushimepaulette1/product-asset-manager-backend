@@ -16,7 +16,7 @@ Two kinds of accounts use this API:
 - An **Admin** manages the catalog — categories, products, variants, stock levels, and collections.
 - A **User** browses the public catalog and buys variants. Buying returns immediately with an order
   reference; the order is then confirmed or rejected in the background, and the shopper checks the
-  outcome with `GET /api/orders/{id}`.
+  outcome with `GET /api/orders/{id}`. While an order is still `Pending`, its owner can cancel it.
 
 ## Architecture
 
@@ -55,8 +55,8 @@ POST /api/orders                                      background: in the API pro
                                            │           │  • skip if not Pending           │
 GET /api/orders/{id}  ◀── reads the row ───┘           │  • enough stock? decrement and   │
    Pending → Confirmed | Rejected (+ reason)           │    Confirm, else Reject + reason │
-                                                       │  • one SaveChanges               │
-                                                       │  • publish StockDecremented ─────┼──▶ [stock-events queue]
+POST /api/orders/{id}/cancel ─▶ Cancelled              │  • one SaveChanges               │
+   (owner only, while Pending)                         │  • publish StockDecremented ─────┼──▶ [stock-events queue]
                                                        │  • complete the message          │
                                                        └──────────────────────────────────┘
 ```
@@ -73,7 +73,8 @@ GET /api/orders/{id}  ◀── reads the row ───┘           │  • en
 | Endpoint | Auth | Result |
 |---|---|---|
 | `POST /api/orders` `{ variantId, quantity }` | any signed-in account | `202` with `{ orderId }`; `400` bad quantity; `404` unknown variant |
-| `GET /api/orders/{id}` | the order's owner, or an Admin | `200` with status (`Pending`/`Confirmed`/`Rejected`) and the rejection reason if any; `403` someone else's order; `404` unknown id |
+| `GET /api/orders/{id}` | the order's owner, or an Admin | `200` with status (`Pending`/`Confirmed`/`Rejected`/`Cancelled`) and the rejection reason if any; `403` someone else's order; `404` unknown id |
+| `POST /api/orders/{id}/cancel` | the order's owner only | `200` with the order, now `Cancelled`; `404` unknown id or someone else's order (the same answer, so it does not reveal the order exists); `409` the order is no longer `Pending`, or kept changing while being cancelled |
 
 ## Entities & Relationships
 
@@ -83,7 +84,7 @@ GET /api/orders/{id}  ◀── reads the row ───┘           │  • en
 | `Category` | self-referencing (`ParentCategory` / `ChildCategories`); has many `Product` | only a *terminal* category (no children) may hold products |
 | `Product` | belongs to one `Category`; has many `Variant`; many-to-many with `Collection` | |
 | `Variant` | belongs to one `Product`; has many `Order` | unique `SKU`; `Quantity` is the stock count; `RowVersion` is a concurrency token |
-| `Order` | belongs to one `ApplicationUser`; references one `Variant` | a purchase record — snapshots `UnitPriceAtPurchase` when the order is placed; `Status` is `Pending`, `Confirmed` or `Rejected`, with a `RejectionReason` when rejected |
+| `Order` | belongs to one `ApplicationUser`; references one `Variant` | a purchase record — snapshots `UnitPriceAtPurchase` when the order is placed; `Status` is `Pending`, `Confirmed`, `Rejected` or `Cancelled`, with a `RejectionReason` when rejected; `RowVersion` is a concurrency token |
 | `Collection` | many-to-many with `Product` via `ProductCollection` | a curated grouping (e.g. "Summer Sale") |
 | `ProductCollection` | join entity, composite key `(ProductId, CollectionId)` | pure many-to-many join, no meaning of its own |
 
@@ -271,8 +272,8 @@ a Collector config change (`docker/otel-collector/config.yaml`), not an app chan
 
 | Signal | Contents |
 |---|---|
-| **Traces** | every HTTP request (health checks excluded), every EF Core query, `OrderPlaced publish` when the message is sent, `OrderPlaced process` in the consumer, and `order.stock_check` around the stock decision, the decrement and `SaveChanges()` (attributes `order.id`, `variant.sku`, `order.quantity`, `order.outcome`, `order.rejection_reason`, `order.save_attempts`). One purchase is **one trace** across both services. |
-| **Metrics** | HTTP request count and duration per route and status code; .NET runtime (GC, memory, threads, JIT); `orders.placed`; `orders.processed` tagged with `outcome` and `rejection_reason`; `orders.processing.duration` (ms, from `Pending` to the final status); `orders.pending`; `orders.pending.oldest_age` (s). |
+| **Traces** | every HTTP request (health checks excluded), every EF Core query, `OrderPlaced publish` when the message is sent, `OrderPlaced process` in the consumer, and `order.stock_check` around the stock decision, the decrement and `SaveChanges()` (attributes `order.id`, `variant.sku`, `order.quantity`, `order.outcome`, `order.rejection_reason`, `order.save_attempts`; `order.outcome` is `skipped_cancelled` when the order was cancelled first). One purchase is **one trace** across both services. |
+| **Metrics** | HTTP request count and duration per route and status code; .NET runtime (GC, memory, threads, JIT); `orders.placed`; `orders.processed` tagged with `outcome` (`confirmed`, `rejected` or `cancelled`) and `rejection_reason`; `orders.processing.duration` (ms, from `Pending` to the final status); `orders.pending`; `orders.pending.oldest_age` (s). |
 | **Logs** | everything written through `ILogger`, with the message template and its fields kept separate, and the trace id and span id of the request or message it was written in. |
 
 Every signal carries `service.name` (`inventory-api`, `order-consumer` or `database-migrator`),
@@ -319,8 +320,9 @@ again: the API still returns `202` and the order is still confirmed; that teleme
 
 Provisioned from `docker/grafana/dashboards/product-asset-manager.json`:
 
-- **Orders:** confirmed and rejected in the selected range, orders placed, `Pending` now, the oldest
-  `Pending` order, confirmed vs rejected over time, and the 95th percentile processing time.
+- **Orders:** confirmed, rejected and cancelled in the selected range, orders placed, `Pending` now, the
+  oldest `Pending` order, orders by outcome over time, and the 95th percentile processing time.
+  Cancellations are counted when the API saves them; they are not part of the processing-time percentile.
 - **HTTP (inventory-api, health checks excluded):** request rate, 5xx error rate and 95th percentile latency
   per endpoint.
 
@@ -364,7 +366,11 @@ They run in-process with `WebApplicationFactory` and the OpenTelemetry in-memory
 - `TracePropagationTests` — the purchase's HTTP request span and the consumer's processing span share one
   trace id.
 - `OrderMetricsTests` — one confirmed and one rejected purchase record exactly one `confirmed` and one
-  `rejected` (`insufficient_stock`) on the orders-processed counter.
+  `rejected` (`insufficient_stock`) on the orders-processed counter; a cancellation records one `cancelled`
+  and no duration, and the consumer skipping a cancelled order records nothing.
+- `PendingOrdersMetricsTests` — a cancelled order is left out of `orders.pending` and its oldest age.
+- `DashboardTests` — the dashboard JSON has unique panel ids, a gap-free top row, and the cancelled panel
+  and colours.
 - `StockCheckSpanTests` — the stock check span sits inside the processing span, wraps the `SaveChanges()`
   query, and records the outcome and the rejection reason.
 - `StructuredLogTests` — the consumer's log keeps its template and fields and carries the purchase's trace
@@ -579,6 +585,13 @@ LocalDB. The async tests are the ones to read:
   `Rejected`, final stock exactly 0.
 - `ConsumerRecoveryTests` — stop the consumer, place orders (they stay `Pending`), restart it: every order
   resolves and stock drops by exactly one unit per order.
+- `CancelOrderTests` — the owner cancels a `Pending` order (`200`, `GET` shows `Cancelled`, stock untouched);
+  another user, an Admin or an unknown id gets `404`; a decided or already cancelled order gets `409`.
+- `CancelRaceTests` — each race between cancelling and the consumer is forced, without timing, by pausing one
+  side's `SaveChanges()` (a test-only interceptor) while the other commits: exactly one side wins, a
+  cancelled order never loses stock, and a lost cancellation is a `409`, never a `500`.
+- `CancelledMessageProcessingTests` / `DeletedRowDuringProcessingTests` — the consumer skips a cancelled
+  order and completes its message, and handles rows deleted mid-save.
 
 **Running the tests against containers instead (no LocalDB, no Azure).** This is what CI does. Start the
 infrastructure, then point the tests at it:
@@ -669,6 +682,15 @@ re-decides — up to three attempts — rather than overwriting the Admin's chan
 now rare (admin against consumer, no longer buyer against buyer), an optimistic retry is the right size of
 tool here.
 
+**Cancelling races the consumer, and `Order.RowVersion` decides who wins.** `POST /api/orders/{id}/cancel`
+only changes a `Pending` order's status; it never touches stock or the queue, so the order's `OrderPlaced`
+message is still delivered and the consumer skips it. Both writers update the order row with its
+`rowversion` in the `WHERE` clause. If the cancellation commits first, the consumer's single
+`SaveChanges()` fails and rolls back, including the stock decrement; the consumer reloads the order *and*
+the variant, sees `Cancelled` and stops. If the consumer commits first, the cancellation reloads, sees the
+decision and returns `409`. A conflict that leaves the order `Pending` is retried, up to three attempts.
+The cancellation is counted on `orders.processed` once, only after its save succeeds.
+
 **A message is only completed after everything it triggered has succeeded.** The consumer runs in
 peek-lock mode with auto-complete off. It completes the message last: after the single `SaveChanges()`
 that confirms or rejects the order, and after the `StockDecremented` event is published. If anything before
@@ -703,7 +725,8 @@ Nothing in this project consumes it yet.
 to its first member, and EF Core treats a property equal to its CLR default as "unset" and lets a database
 default take over. With `Pending` first, explicitly saving a new order as `Pending` would have been silently
 replaced by the database default. Putting `Confirmed` first avoids that; existing orders, which all
-succeeded under the old synchronous flow, were backfilled to `Confirmed` by the migration. Enums are
+succeeded under the old synchronous flow, were backfilled to `Confirmed` by the migration. `Cancelled` was
+added later at the end, so the existing values kept their numbers. Enums are
 serialised in API responses as text (`"Pending"`), not numbers.
 
 **`POST /api/orders` changed contract.** It used to return `201` with the full order after reducing stock.

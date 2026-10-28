@@ -69,7 +69,11 @@ consumer in one process; Compose runs separate `api`, `consumer` and one-shot `m
    confirms or rejects in one `SaveChanges`, publishes `StockDecremented` on confirm, and completes the
    message last.
 3. `Variant.RowVersion` guards against concurrent admin stock edits. On a concurrency conflict the consumer
-   reloads and decides again, up to 3 times.
+   reloads both the order and the variant and decides again, up to 3 times.
+4. `POST /api/orders/{id}/cancel` (`OrderService.CancelAsync`) lets the owner cancel a `Pending` order; it never
+   touches stock or the queue, and the consumer skips the cancelled order's message. `Order.RowVersion`
+   decides the race with the consumer: exactly one side commits. Race tests force the interleaving with the
+   test-only `BeforeSaveHook` interceptor instead of timing.
 
 **Observability** (`src/Observability`): OTLP goes to the Collector only, and only when
 `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Trace context crosses Service Bus by hand: `traceparent` goes in the
